@@ -1,0 +1,41 @@
+[package]
+name = "signer-lab-gpui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "signer-lab"
+path = "src/main.rs"
+
+[dependencies]
+color-eyre.workspace = true
+directories.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+bitcoin.workspace = true
+nokhwa.workspace = true
+rxing.workspace = true
+serde_json.workspace = true
+signer-lab-core = { path = "../signer-lab-core" }
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[package.metadata.bundle]
+name = "Signer Lab"
+identifier = "org.bitcoinppl.signer-lab"
+category = "Developer Tool"
+short_description = "Test Cove wallet import and PSBT signing flows"
+osx_minimum_system_version = "13.0"
+osx_info_plist_exts = ["Info.plist"]
+icon = ["assets/SignerLab.icns"]
+
+[lints]
+workspace = true

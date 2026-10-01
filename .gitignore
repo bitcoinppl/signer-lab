@@ -1,0 +1,8 @@
+/target/
+/.DS_Store
+/_scratch/*
+!/_scratch/.gitkeep
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+

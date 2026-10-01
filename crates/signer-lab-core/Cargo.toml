@@ -1,0 +1,43 @@
+[package]
+name = "signer-lab-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bdk_esplora.workspace = true
+bdk_wallet.workspace = true
+bbqr.workspace = true
+bip39.workspace = true
+bitcoin.workspace = true
+cove-bdk.workspace = true
+cove-bdk-progressive-scan.workspace = true
+cove-bip39.workspace = true
+cove-ur.workspace = true
+cove-util.workspace = true
+foundation-ur.workspace = true
+flume.workspace = true
+jiff.workspace = true
+keyring.workspace = true
+minicbor.workspace = true
+pubport.workspace = true
+rand.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toasty.workspace = true
+toasty-driver-turso.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+color-eyre.workspace = true
+
+[lints]
+workspace = true
