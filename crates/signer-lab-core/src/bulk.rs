@@ -5,21 +5,33 @@ use cove_bdk::coin_selection::CoveDefaultCoinSelection;
 use cove_util::ResultExt as _;
 use serde::{Deserialize, Serialize};
 
-use crate::{LabFeeRate, OperationKind, WalletAccount};
+use crate::{LabFeeRate, NetworkWallet, OperationKind, WalletAccount, WalletError};
 
 const MAX_FAN_OUT_OUTPUTS: usize = 10_000;
 const MAX_BATCH_TRANSACTIONS: usize = 1_000;
 
-/// A checked, non-empty set of destination scripts.
+/// A checked, non-empty set of destination scripts
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<ScriptBuf>")]
 pub struct DestinationScripts(Vec<ScriptBuf>);
 
+impl TryFrom<Vec<ScriptBuf>> for DestinationScripts {
+    type Error = BulkPlanError;
+
+    fn try_from(value: Vec<ScriptBuf>) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
 impl DestinationScripts {
-    /// Creates a destination set for fan-out or independent batch planning.
+    /// Maximum number of destinations accepted by one fan-out request
+    pub const MAX_COUNT: usize = MAX_FAN_OUT_OUTPUTS;
+
+    /// Creates a destination set for fan-out or independent batch planning
     ///
     /// # Errors
     ///
-    /// Returns an error when the list is empty or exceeds 10,000 scripts.
+    /// Returns an error when the list is empty or exceeds 10,000 scripts
     pub fn new(scripts: Vec<ScriptBuf>) -> Result<Self, BulkPlanError> {
         if scripts.is_empty() {
             return Err(BulkPlanError::NoDestinations);
@@ -32,24 +44,50 @@ impl DestinationScripts {
         Ok(Self(scripts))
     }
 
-    /// Returns the number of destination scripts.
+    /// Returns the number of destination scripts
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// Returns true only when no scripts are present.
+    /// Returns true only when no scripts are present
     ///
-    /// Checked instances are never empty. This method supports generic collection views.
+    /// Checked instances are never empty. This method supports generic collection views
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }
 
-/// A checked bulk transaction request.
+/// A checked bulk transaction request
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "BulkRequestKind")]
 pub struct BulkRequest(BulkRequestKind);
+
+impl TryFrom<BulkRequestKind> for BulkRequest {
+    type Error = BulkPlanError;
+
+    fn try_from(value: BulkRequestKind) -> Result<Self, Self::Error> {
+        match value {
+            BulkRequestKind::FanOut {
+                amount_per_output,
+                destinations,
+            } => Self::fan_out(amount_per_output, destinations),
+            BulkRequestKind::Batch {
+                amount_per_transaction,
+                destinations,
+            } => Self::batch(amount_per_transaction, destinations),
+            BulkRequestKind::Consolidate {
+                destination,
+                selected_inputs: Some(inputs),
+            } => Self::consolidate_selected(destination, inputs),
+            BulkRequestKind::Consolidate {
+                destination,
+                selected_inputs: None,
+            } => Ok(Self::consolidate_all(destination)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -69,11 +107,14 @@ enum BulkRequestKind {
 }
 
 impl BulkRequest {
-    /// Creates one transaction with one output for every destination.
+    /// Maximum number of independent transactions accepted by one batch request
+    pub const MAX_BATCH_COUNT: usize = MAX_BATCH_TRANSACTIONS;
+
+    /// Creates one transaction with one output for every destination
     ///
     /// # Errors
     ///
-    /// Returns an error when the amount is zero.
+    /// Returns an error when the amount is zero
     pub fn fan_out(
         amount_per_output: Amount,
         destinations: DestinationScripts,
@@ -86,11 +127,11 @@ impl BulkRequest {
         }))
     }
 
-    /// Creates one independent transaction for every destination.
+    /// Creates one independent transaction for every destination
     ///
     /// # Errors
     ///
-    /// Returns an error when the amount is zero or more than 1,000 transactions are requested.
+    /// Returns an error when the amount is zero or more than 1,000 transactions are requested
     pub fn batch(
         amount_per_transaction: Amount,
         destinations: DestinationScripts,
@@ -106,7 +147,7 @@ impl BulkRequest {
         }))
     }
 
-    /// Creates a transaction that consolidates every available UTXO.
+    /// Creates a transaction that consolidates every available UTXO
     #[must_use]
     pub fn consolidate_all(destination: ScriptBuf) -> Self {
         Self(BulkRequestKind::Consolidate {
@@ -115,11 +156,11 @@ impl BulkRequest {
         })
     }
 
-    /// Creates a transaction that consolidates only selected UTXOs.
+    /// Creates a transaction that consolidates only selected UTXOs
     ///
     /// # Errors
     ///
-    /// Returns an error when no outpoints are selected or an outpoint is repeated.
+    /// Returns an error when no outpoints are selected or an outpoint is repeated
     pub fn consolidate_selected(
         destination: ScriptBuf,
         selected_inputs: Vec<OutPoint>,
@@ -139,7 +180,7 @@ impl BulkRequest {
         }))
     }
 
-    /// Returns the operation behavior.
+    /// Returns the operation behavior
     #[must_use]
     pub const fn kind(&self) -> OperationKind {
         match self.0 {
@@ -150,54 +191,72 @@ impl BulkRequest {
     }
 }
 
-/// One planned PSBT and its review values.
+/// One planned PSBT and its review values
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedTransaction {
     #[serde(with = "psbt_serde")]
     psbt: Psbt,
     fee: Amount,
-    actual_fee_rate: FeeRate,
+    // plans saved by earlier builds use the old key; unreadable active plans block startup reconciliation
+    #[serde(alias = "actual_fee_rate")]
+    estimated_fee_rate: FeeRate,
     sent_amount: Amount,
 }
 
 impl PlannedTransaction {
-    /// Returns the unsigned PSBT.
+    pub(crate) fn sign_if_needed(&mut self, wallet: &NetworkWallet) -> Result<bool, WalletError> {
+        // BDK removes key origins during finalization, so recovery must reuse saved signatures
+        if !self.psbt.inputs.is_empty()
+            && self.psbt.inputs.len() == self.psbt.unsigned_tx.input.len()
+            && self.psbt.inputs.iter().all(|input| {
+                input.final_script_sig.is_some() || input.final_script_witness.is_some()
+            })
+        {
+            return Ok(true);
+        }
+
+        wallet
+            .sign(&mut self.psbt, true)
+            .map(|report| report.finalized)
+    }
+
+    /// Returns the unsigned PSBT
     #[must_use]
     pub const fn psbt(&self) -> &Psbt {
         &self.psbt
     }
 
-    /// Returns a mutable PSBT for signing.
+    /// Returns a mutable PSBT for signing
     #[must_use]
     pub const fn psbt_mut(&mut self) -> &mut Psbt {
         &mut self.psbt
     }
 
-    /// Returns the calculated miner fee.
+    /// Returns the calculated miner fee
     #[must_use]
     pub const fn fee(&self) -> Amount {
         self.fee
     }
 
-    /// Returns the actual fee rate after integer weight rounding.
+    /// Returns the fee rate estimated with maximum input satisfaction weights
     #[must_use]
-    pub const fn actual_fee_rate(&self) -> FeeRate {
-        self.actual_fee_rate
+    pub const fn estimated_fee_rate(&self) -> FeeRate {
+        self.estimated_fee_rate
     }
 
-    /// Returns the amount assigned to non-change destinations.
+    /// Returns the amount assigned to non-change destinations
     #[must_use]
     pub const fn sent_amount(&self) -> Amount {
         self.sent_amount
     }
 
-    /// Returns the transaction input count.
+    /// Returns the transaction input count
     #[must_use]
     pub fn input_count(&self) -> usize {
         self.psbt.unsigned_tx.input.len()
     }
 
-    /// Returns the transaction output count, including change.
+    /// Returns the transaction output count, including change
     #[must_use]
     pub fn output_count(&self) -> usize {
         self.psbt.unsigned_tx.output.len()
@@ -212,70 +271,84 @@ impl PlannedTransaction {
     }
 }
 
-/// A recoverable bulk plan whose inputs are reserved in the BDK wallet.
+/// A recoverable bulk plan whose inputs are reserved in the BDK wallet
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BulkPlan {
     kind: OperationKind,
+    #[serde(default)]
+    destination_range: Option<std::ops::RangeInclusive<u32>>,
     requested_fee_rate: LabFeeRate,
     transactions: Vec<PlannedTransaction>,
 }
 
 impl BulkPlan {
-    /// Returns the operation behavior.
+    /// Returns the external destination indexes captured when the plan was prepared
+    #[must_use]
+    pub const fn destination_range(&self) -> Option<&std::ops::RangeInclusive<u32>> {
+        self.destination_range.as_ref()
+    }
+
+    pub(crate) fn set_destination_range(&mut self, range: Option<std::ops::RangeInclusive<u32>>) {
+        self.destination_range = range;
+    }
+
+    /// Returns the operation behavior
     #[must_use]
     pub const fn kind(&self) -> OperationKind {
         self.kind
     }
 
-    /// Returns the requested fee rate.
+    /// Returns the requested fee rate
     #[must_use]
     pub const fn requested_fee_rate(&self) -> LabFeeRate {
         self.requested_fee_rate
     }
 
-    /// Returns the planned transactions in execution order.
+    /// Returns the planned transactions in execution order
     #[must_use]
     pub fn transactions(&self) -> &[PlannedTransaction] {
         &self.transactions
     }
 
-    /// Returns mutable planned transactions for signing and durable recovery updates.
+    /// Returns mutable planned transactions for signing and durable recovery updates
     #[must_use]
     pub fn transactions_mut(&mut self) -> &mut [PlannedTransaction] {
         &mut self.transactions
     }
 
-    /// Returns every input outpoint reserved by this plan.
+    /// Returns every input outpoint reserved by this plan
     #[must_use]
     pub fn reserved_outpoints(&self) -> Vec<OutPoint> {
         self.input_outpoints().collect()
     }
 
-    /// Locks every planned input and persists the BDK wallet change.
+    /// Locks every planned input and persists the BDK wallet change
     ///
-    /// Calling this more than once is safe and restores locks after an interrupted prepare step.
+    /// Calling this more than once is safe and restores locks after an interrupted prepare step
     ///
     /// # Errors
     ///
-    /// Returns an error when BDK cannot persist the reservations.
+    /// Returns an error when BDK cannot persist the reservations
     pub fn reserve_inputs(&self, wallet: &mut WalletAccount) -> Result<(), BulkPlanError> {
         for outpoint in self.input_outpoints() {
             wallet.bdk_mut().lock_outpoint(outpoint);
         }
+
         wallet.persist().map_err(BulkPlanError::Wallet)?;
 
         Ok(())
     }
 
-    /// Unlocks every input reserved for this plan and persists the change.
+    /// Unlocks every input reserved for this plan and persists the change
     ///
     /// # Errors
     ///
-    /// Returns an error when the BDK wallet cannot persist the unlocks.
+    /// Returns an error when the BDK wallet cannot persist the unlocks
     pub fn release_reservations(&self, wallet: &mut WalletAccount) -> Result<(), BulkPlanError> {
         for outpoint in self.input_outpoints() {
             wallet.bdk_mut().unlock_outpoint(outpoint);
         }
+
         wallet.persist().map_err(BulkPlanError::Wallet)?;
 
         Ok(())
@@ -288,24 +361,25 @@ impl BulkPlan {
     }
 }
 
-/// Builds BDK PSBTs for one wallet account.
+/// Builds BDK PSBTs for one wallet account
 pub struct BulkPlanner<'a> {
     wallet: &'a mut WalletAccount,
 }
 
 impl<'a> BulkPlanner<'a> {
-    /// Creates a planner for one address-type account.
+    /// Creates a planner for one address-type account
+    #[must_use]
     pub const fn new(wallet: &'a mut WalletAccount) -> Self {
         Self { wallet }
     }
 
-    /// Builds all PSBTs without reserving their inputs.
+    /// Builds all PSBTs without reserving their inputs
     ///
-    /// Independent batch transactions never spend each other's change.
+    /// Independent batch transactions never spend each other's change
     ///
     /// # Errors
     ///
-    /// Returns an error for insufficient funds or invalid selected inputs.
+    /// Returns an error for insufficient funds or invalid selected inputs
     pub fn plan(
         &mut self,
         request: &BulkRequest,
@@ -329,8 +403,10 @@ impl<'a> BulkPlanner<'a> {
                 vec![self.plan_consolidation(destination, selected_inputs.as_deref(), fee_rate)?]
             }
         };
+
         let plan = BulkPlan {
             kind: request.kind(),
+            destination_range: None,
             requested_fee_rate: fee_rate,
             transactions,
         };
@@ -371,6 +447,7 @@ impl<'a> BulkPlanner<'a> {
                 fee_rate,
                 index as u64,
             )?;
+
             reserved.extend(transaction.input_outpoints());
             transactions.push(transaction);
         }
@@ -392,16 +469,19 @@ impl<'a> BulkPlanner<'a> {
                     .checked_add(*amount)
                     .ok_or(BulkPlanError::AmountOverflow)
             })?;
+
         let mut builder = self
             .wallet
             .bdk_mut()
             .build_tx()
             .coin_selection(CoveDefaultCoinSelection::new(seed));
+
         builder
             .set_recipients(recipients)
             .unspendable(unspendable)
             .fee_rate(fee_rate.as_bitcoin())
             .add_global_xpubs();
+
         let psbt = builder
             .finish()
             .map_err_str(BulkPlanError::CreateTransaction)?;
@@ -415,11 +495,22 @@ impl<'a> BulkPlanner<'a> {
         selected_inputs: Option<&[OutPoint]>,
         fee_rate: LabFeeRate,
     ) -> Result<PlannedTransaction, BulkPlanError> {
+        if let Some(inputs) = selected_inputs
+            && inputs
+                .iter()
+                .any(|outpoint| self.wallet.bdk().is_outpoint_locked(*outpoint))
+        {
+            return Err(BulkPlanError::SelectedInput(
+                "selected input is reserved by another operation".to_owned(),
+            ));
+        }
+
         let mut builder = self
             .wallet
             .bdk_mut()
             .build_tx()
             .coin_selection(CoveDefaultCoinSelection::new(0));
+
         builder
             .drain_to(destination.clone())
             .fee_rate(fee_rate.as_bitcoin())
@@ -430,6 +521,7 @@ impl<'a> BulkPlanner<'a> {
                 builder
                     .add_utxos(inputs)
                     .map_err_str(BulkPlanError::SelectedInput)?;
+
                 builder.manually_selected_only();
             }
             None => {
@@ -440,6 +532,7 @@ impl<'a> BulkPlanner<'a> {
         let psbt = builder
             .finish()
             .map_err_str(BulkPlanError::CreateTransaction)?;
+
         let sent_amount = psbt
             .unsigned_tx
             .output
@@ -460,12 +553,33 @@ impl<'a> BulkPlanner<'a> {
             .bdk()
             .calculate_fee(&psbt.unsigned_tx)
             .map_err_str(BulkPlanError::CalculateFee)?;
-        let actual_fee_rate = fee / psbt.unsigned_tx.weight();
+
+        let mut weight = psbt.unsigned_tx.weight();
+        let mut has_segwit = false;
+        for input in &psbt.unsigned_tx.input {
+            let utxo = self
+                .wallet
+                .bdk()
+                .get_utxo(input.previous_output)
+                .ok_or(BulkPlanError::UnknownInput(input.previous_output))?;
+            let descriptor = self.wallet.bdk().public_descriptor(utxo.keychain);
+            has_segwit |= descriptor.desc_type().segwit_version().is_some();
+            weight += descriptor
+                .max_weight_to_satisfy()
+                .map_err(BulkPlanError::SatisfactionWeight)?;
+        }
+
+        if has_segwit {
+            // satisfaction weights exclude the marker, flag, and empty witness-count bytes
+            weight += bitcoin::Weight::from_wu(2 + psbt.unsigned_tx.input.len() as u64);
+        }
+
+        let estimated_fee_rate = fee / weight;
 
         Ok(PlannedTransaction {
             psbt,
             fee,
-            actual_fee_rate,
+            estimated_fee_rate,
             sent_amount,
         })
     }
@@ -507,43 +621,49 @@ mod psbt_serde {
     }
 }
 
-/// Bulk planning and reservation errors.
+/// Bulk planning and reservation errors
 #[derive(Debug, thiserror::Error)]
 pub enum BulkPlanError {
-    /// No destination was provided.
+    /// A planned input is not owned by the wallet
+    #[error("planned input {0} is not owned by the wallet")]
+    UnknownInput(OutPoint),
+    /// The descriptor has no maximum satisfaction weight
+    #[error("input satisfaction weight is unavailable: {0}")]
+    SatisfactionWeight(#[source] bdk_wallet::miniscript::Error),
+    /// No destination was provided
     #[error("at least one destination is required")]
     NoDestinations,
-    /// The fan-out limit was exceeded.
+    /// The fan-out limit was exceeded
     #[error("{0} destinations exceed the limit of 10000")]
     TooManyDestinations(usize),
-    /// The independent transaction limit was exceeded.
+    /// The independent transaction limit was exceeded
     #[error("{0} batch transactions exceed the limit of 1000")]
     TooManyBatchTransactions(usize),
-    /// A recipient amount was zero.
+    /// A recipient amount was zero
     #[error("recipient amount must be greater than zero")]
     ZeroAmount,
-    /// Recipient amounts overflowed Bitcoin's amount range.
+    /// Recipient amounts overflowed Bitcoin's amount range
     #[error("recipient amount total is too large")]
     AmountOverflow,
-    /// Selected consolidation had no inputs.
+    /// Selected consolidation had no inputs
     #[error("select at least one UTXO to consolidate")]
     NoSelectedInputs,
-    /// Selected consolidation repeated an outpoint.
+    /// Selected consolidation repeated an outpoint
     #[error("selected consolidation inputs contain a duplicate")]
     DuplicateSelectedInput,
-    /// A batch transaction reused an earlier input.
+    /// A batch transaction reused an earlier input
     #[error("independent batch transactions cannot reuse inputs")]
     InputReusedAcrossBatch,
-    /// BDK rejected a selected UTXO.
+    /// BDK rejected a selected UTXO
     #[error("selected UTXO is invalid: {0}")]
     SelectedInput(String),
-    /// BDK could not create a transaction.
+    /// BDK could not create a transaction
     #[error("transaction creation failed: {0}")]
     CreateTransaction(String),
-    /// BDK could not calculate the fee.
+    /// BDK could not calculate the fee
     #[error("fee calculation failed: {0}")]
     CalculateFee(String),
-    /// BDK wallet persistence failed.
+    /// BDK wallet persistence failed
     #[error("wallet persistence failed: {0}")]
     Wallet(#[source] crate::WalletError),
 }
@@ -554,7 +674,7 @@ mod tests {
         Amount, Transaction, TxOut, absolute::LockTime, transaction::Version,
     };
 
-    use super::{BulkPlanner, BulkRequest, DestinationScripts};
+    use super::{BulkPlanner, BulkRequest, DestinationScripts, PlannedTransaction};
     use crate::{
         AccountIndex, AddressType, LabFeeRate, LabNetwork, MnemonicSecret, NetworkWallet, SignerId,
     };
@@ -573,11 +693,13 @@ mod tests {
             &secret,
         )
         .expect("test wallet opens");
+
         let account = wallet.account_mut(AddressType::NativeSegwit);
         let receive = account
             .bdk()
             .peek_address(bdk_wallet::KeychainKind::External, 0)
             .address;
+
         let funding = Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
@@ -587,13 +709,16 @@ mod tests {
                 script_pubkey: receive.script_pubkey(),
             }],
         };
+
         account.bdk_mut().apply_unconfirmed_txs([(funding, 1)]);
         account.persist().expect("funded test wallet persists");
 
         let scripts = DestinationScripts::new(vec![receive.script_pubkey(); 3])
             .expect("test destinations are valid");
+
         let request = BulkRequest::fan_out(Amount::from_sat(5_000), scripts)
             .expect("test fan-out request is valid");
+
         let plan = BulkPlanner::new(account)
             .plan(&request, LabFeeRate::DEFAULT)
             .expect("funded test wallet can plan fan-out");
@@ -603,13 +728,36 @@ mod tests {
             plan.transactions()[0].sent_amount(),
             Amount::from_sat(15_000)
         );
+
         assert_eq!(account.snapshot().locked_utxo_count, 0);
         plan.reserve_inputs(account)
             .expect("planned inputs can be reserved");
+
         assert_eq!(account.snapshot().locked_utxo_count, 1);
         plan.release_reservations(account)
             .expect("planned inputs can be released");
+
         assert_eq!(account.snapshot().locked_utxo_count, 0);
+
+        let mut transaction = plan.transactions()[0].clone();
+        assert!(
+            transaction
+                .sign_if_needed(&wallet)
+                .expect("planned PSBT signs")
+        );
+
+        assert!(transaction.psbt().inputs[0].bip32_derivation.is_empty());
+        let saved = serde_json::to_value(&transaction).expect("signed transaction saves");
+        let mut recovered: PlannedTransaction =
+            serde_json::from_value(saved).expect("signed transaction reloads");
+
+        assert!(
+            recovered
+                .sign_if_needed(&wallet)
+                .expect("signed transaction resumes")
+        );
+
+        assert_eq!(recovered.psbt(), transaction.psbt());
 
         let _ = std::fs::remove_dir_all(temp);
     }

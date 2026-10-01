@@ -3,39 +3,60 @@ use std::{fmt, str::FromStr};
 use bitcoin::FeeRate;
 use serde::{Deserialize, Serialize};
 
-/// An exact fee rate with a version 1 minimum of 0.1 sat/vB.
+/// An exact fee rate with a version 1 minimum of 0.1 sat/vB
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "UncheckedFeeRate")]
 pub struct LabFeeRate {
     sat_per_kwu: u64,
 }
 
+#[derive(Deserialize)]
+struct UncheckedFeeRate {
+    sat_per_kwu: u64,
+}
+
+impl TryFrom<UncheckedFeeRate> for LabFeeRate {
+    type Error = FeeRateError;
+
+    fn try_from(value: UncheckedFeeRate) -> Result<Self, Self::Error> {
+        Self::from_sat_per_kwu(value.sat_per_kwu)
+    }
+}
+
 impl LabFeeRate {
-    /// Minimum fee rate in satoshis per 1,000 weight units.
+    /// Minimum fee rate in satoshis per 1,000 weight units
     pub const MIN_SAT_PER_KWU: u64 = 25;
 
-    /// Default fee rate of 0.5 sat/vB.
+    /// Maximum fee rate of 100,000 sat/vB
+    pub const MAX_SAT_PER_KWU: u64 = 25_000_000;
+
+    /// Default fee rate of 0.5 sat/vB
     pub const DEFAULT: Self = Self { sat_per_kwu: 125 };
 
-    /// Creates a fee rate from satoshis per 1,000 weight units.
+    /// Creates a fee rate from satoshis per 1,000 weight units
     ///
     /// # Errors
     ///
-    /// Returns an error when the rate is lower than 0.1 sat/vB.
+    /// Returns an error when the rate is outside 0.1 through 100,000 sat/vB
     pub const fn from_sat_per_kwu(sat_per_kwu: u64) -> Result<Self, FeeRateError> {
         if sat_per_kwu < Self::MIN_SAT_PER_KWU {
             return Err(FeeRateError::BelowMinimum);
         }
 
+        if sat_per_kwu > Self::MAX_SAT_PER_KWU {
+            return Err(FeeRateError::AboveMaximum);
+        }
+
         Ok(Self { sat_per_kwu })
     }
 
-    /// Returns the BDK fee-rate value.
+    /// Returns the BDK fee-rate value
     #[must_use]
     pub const fn as_bitcoin(self) -> FeeRate {
         FeeRate::from_sat_per_kwu(self.sat_per_kwu)
     }
 
-    /// Returns satoshis per 1,000 weight units.
+    /// Returns satoshis per 1,000 weight units
     #[must_use]
     pub const fn to_sat_per_kwu(self) -> u64 {
         self.sat_per_kwu
@@ -76,6 +97,7 @@ impl FromStr for LabFeeRate {
             .checked_mul(1_000)
             .and_then(|value| value.checked_add(milli_fraction))
             .ok_or(FeeRateError::Overflow)?;
+
         if milli_sat_per_vbyte < 100 {
             return Err(FeeRateError::BelowMinimum);
         }
@@ -109,19 +131,22 @@ impl fmt::Display for LabFeeRate {
     }
 }
 
-/// Errors from parsing or validating a fee rate.
+/// Errors from parsing or validating a fee rate
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FeeRateError {
-    /// The text is not a positive decimal number.
+    /// The text is not a positive decimal number
     #[error("fee rate must be a positive decimal number")]
     InvalidNumber,
-    /// The text has more than three decimal places.
+    /// The text has more than three decimal places
     #[error("fee rate supports at most three decimal places")]
     InvalidPrecision,
-    /// The rate is lower than 0.1 sat/vB.
+    /// The rate is lower than 0.1 sat/vB
     #[error("fee rate must be at least 0.1 sat/vB")]
     BelowMinimum,
-    /// The value cannot be represented.
+    /// The rate exceeds 100,000 sat/vB
+    #[error("fee rate must not exceed 100000 sat/vB")]
+    AboveMaximum,
+    /// The value cannot be represented
     #[error("fee rate is too large")]
     Overflow,
 }
@@ -151,5 +176,43 @@ mod tests {
     #[test]
     fn fee_rate_rejects_values_below_version_one_minimum() {
         assert!(LabFeeRate::from_str("0.099").is_err());
+    }
+
+    #[test]
+    fn maximum_rate_is_bounded_and_safe_for_block_weight() {
+        let maximum = LabFeeRate::MAX_SAT_PER_KWU;
+        assert_eq!(
+            LabFeeRate::from_sat_per_kwu(maximum + 1),
+            Err(super::FeeRateError::AboveMaximum)
+        );
+
+        assert_eq!(
+            LabFeeRate::from_str("100000.004"),
+            Err(super::FeeRateError::AboveMaximum)
+        );
+
+        assert!(
+            serde_json::from_str::<LabFeeRate>(&format!("{{\"sat_per_kwu\":{}}}", maximum + 1))
+                .is_err()
+        );
+
+        let rate = LabFeeRate::from_sat_per_kwu(maximum).expect("maximum rate");
+        assert!(
+            rate.as_bitcoin()
+                .fee_wu(bitcoin::Weight::MAX_BLOCK)
+                .is_some()
+        );
+
+        assert_eq!(rate.to_string(), "100000");
+    }
+
+    #[test]
+    fn saved_fee_rate_cannot_bypass_minimum() {
+        assert!(serde_json::from_str::<LabFeeRate>(r#"{"sat_per_kwu":0}"#).is_err());
+        let json = serde_json::to_string(&LabFeeRate::DEFAULT).expect("rate serializes");
+        assert_eq!(
+            serde_json::from_str::<LabFeeRate>(&json).expect("rate decodes"),
+            LabFeeRate::DEFAULT
+        );
     }
 }

@@ -5,22 +5,22 @@ use crate::{
     NetworkWallet, QrDensity, QrFrames, QrTransport, QrTransportError, SignReport, WalletError,
 };
 
-/// A decoded PSBT that has not yet passed through transaction review.
+/// A decoded PSBT that has not yet passed through transaction review
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingPsbt(Psbt);
 
 impl PendingPsbt {
-    /// Wraps a PSBT decoded from BBQR, UR, a file, or pasted text.
+    /// Wraps a PSBT decoded from BBQR, UR, a file, or pasted text
     #[must_use]
     pub const fn new(psbt: Psbt) -> Self {
         Self(psbt)
     }
 
-    /// Computes review facts and advances the PSBT to the reviewed state.
+    /// Computes review facts and advances the PSBT to the reviewed state
     ///
     /// # Errors
     ///
-    /// Returns an error when transaction amounts overflow.
+    /// Returns an error for inconsistent PSBT maps, previous outputs, or invalid amount totals
     pub fn review(self, wallet: &NetworkWallet) -> Result<ReviewedPsbt, PsbtReviewError> {
         let review = PsbtReview::from_psbt(&self.0, wallet)?;
 
@@ -31,33 +31,33 @@ impl PendingPsbt {
     }
 }
 
-/// User-visible output facts for PSBT review.
+/// User-visible output facts for PSBT review
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PsbtOutputReview {
-    /// Output index in the unsigned transaction.
+    /// Output index in the unsigned transaction
     pub index: usize,
-    /// Output amount.
+    /// Output amount
     pub amount: Amount,
-    /// Address text when the script is standard for the active network.
+    /// Address text when the script is standard for the active network
     pub address: Option<String>,
-    /// True when one of this signer's BDK accounts owns the script.
+    /// True when one of this signer's BDK accounts owns the script
     pub owned_by_signer: bool,
 }
 
-/// Review facts shown before a signing action is enabled.
+/// Review facts shown before a signing action is enabled
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PsbtReview {
-    /// Number of transaction inputs.
+    /// Number of transaction inputs
     pub input_count: usize,
-    /// Number of inputs that include this signer's fingerprint.
+    /// Number of inputs that include this signer's fingerprint
     pub matching_input_count: usize,
-    /// Total known input amount, or `None` when any previous output is absent.
+    /// Total known input amount, or `None` when any previous output is absent
     pub input_amount: Option<Amount>,
-    /// Total output amount.
+    /// Total output amount
     pub output_amount: Amount,
-    /// Exact fee when all input amounts are known.
+    /// Exact fee when all input amounts are known
     pub fee: Option<Amount>,
-    /// Output details in transaction order.
+    /// Output details in transaction order
     pub outputs: Vec<PsbtOutputReview>,
 }
 
@@ -73,6 +73,7 @@ impl PsbtReview {
                         .checked_add(output.value)
                         .ok_or(PsbtReviewError::AmountOverflow)
                 })?;
+
         let fee = input_amount
             .map(|input| {
                 input
@@ -80,6 +81,7 @@ impl PsbtReview {
                     .ok_or(PsbtReviewError::OutputsExceedInputs)
             })
             .transpose()?;
+
         let outputs = psbt
             .unsigned_tx
             .output
@@ -90,13 +92,8 @@ impl PsbtReview {
                     Address::from_script(&output.script_pubkey, wallet.network.bitcoin_network())
                         .ok()
                         .map(|address| address.to_string());
-                let owned_by_signer = [
-                    crate::AddressType::Legacy,
-                    crate::AddressType::WrappedSegwit,
-                    crate::AddressType::NativeSegwit,
-                ]
-                .into_iter()
-                .any(|address_type| {
+
+                let owned_by_signer = crate::AddressType::ALL.into_iter().any(|address_type| {
                     wallet
                         .account(address_type)
                         .bdk()
@@ -111,6 +108,7 @@ impl PsbtReview {
                 }
             })
             .collect();
+
         let fingerprint = wallet.fingerprint();
         let matching_input_count = psbt
             .inputs
@@ -138,7 +136,7 @@ impl PsbtReview {
     }
 }
 
-/// A PSBT that has review facts attached and can now be signed.
+/// A PSBT that has review facts attached and can now be signed
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewedPsbt {
     psbt: Psbt,
@@ -146,17 +144,17 @@ pub struct ReviewedPsbt {
 }
 
 impl ReviewedPsbt {
-    /// Returns the immutable review facts.
+    /// Returns the immutable review facts
     #[must_use]
     pub const fn review(&self) -> &PsbtReview {
         &self.review
     }
 
-    /// Signs every matching input with the selected virtual signer.
+    /// Signs every matching input with the selected virtual signer
     ///
     /// # Errors
     ///
-    /// Returns an error when no input matches or BDK rejects signing.
+    /// Returns an error when no input matches or BDK rejects signing
     pub fn sign(
         mut self,
         wallet: &NetworkWallet,
@@ -172,7 +170,7 @@ impl ReviewedPsbt {
     }
 }
 
-/// A signed PSBT ready for BBQR or `crypto-psbt` output.
+/// A signed PSBT ready for BBQR or `crypto-psbt` output
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedPsbt {
     psbt: Psbt,
@@ -181,29 +179,29 @@ pub struct SignedPsbt {
 }
 
 impl SignedPsbt {
-    /// Returns the signed PSBT.
+    /// Returns the signed PSBT
     #[must_use]
     pub const fn psbt(&self) -> &Psbt {
         &self.psbt
     }
 
-    /// Returns the pre-sign review facts.
+    /// Returns the pre-sign review facts
     #[must_use]
     pub const fn review(&self) -> &PsbtReview {
         &self.review
     }
 
-    /// Returns BDK's signing result details.
+    /// Returns BDK's signing result details
     #[must_use]
     pub const fn report(&self) -> SignReport {
         self.report
     }
 
-    /// Encodes the signed PSBT for animated QR display.
+    /// Encodes the signed PSBT for animated QR display
     ///
     /// # Errors
     ///
-    /// Returns an error when QR framing fails.
+    /// Returns an error when QR framing fails
     pub fn qr_frames(
         &self,
         transport: QrTransport,
@@ -214,37 +212,70 @@ impl SignedPsbt {
 }
 
 fn input_amount(psbt: &Psbt) -> Result<Option<Amount>, PsbtReviewError> {
-    let mut total = Amount::ZERO;
+    if psbt.inputs.len() != psbt.unsigned_tx.input.len()
+        || psbt.outputs.len() != psbt.unsigned_tx.output.len()
+    {
+        return Err(PsbtReviewError::InvalidStructure);
+    }
 
-    for (unsigned_input, input) in psbt.unsigned_tx.input.iter().zip(&psbt.inputs) {
-        let amount = if let Some(previous) = &input.witness_utxo {
-            Some(previous.value)
-        } else if let Some(previous_transaction) = &input.non_witness_utxo {
-            previous_transaction
+    let mut total = Amount::ZERO;
+    let mut all_known = true;
+
+    for (index, (unsigned_input, input)) in
+        psbt.unsigned_tx.input.iter().zip(&psbt.inputs).enumerate()
+    {
+        let previous_output = if let Some(transaction) = &input.non_witness_utxo {
+            if transaction.compute_txid() != unsigned_input.previous_output.txid {
+                return Err(PsbtReviewError::InvalidPreviousOutput { index });
+            }
+
+            let output = transaction
                 .output
                 .get(unsigned_input.previous_output.vout as usize)
-                .map(|output| output.value)
+                .ok_or(PsbtReviewError::InvalidPreviousOutput { index })?;
+
+            if input
+                .witness_utxo
+                .as_ref()
+                .is_some_and(|witness| witness != output)
+            {
+                return Err(PsbtReviewError::InvalidPreviousOutput { index });
+            }
+
+            Some(output)
         } else {
-            None
+            input.witness_utxo.as_ref()
         };
-        let Some(amount) = amount else {
-            return Ok(None);
+
+        let Some(output) = previous_output else {
+            all_known = false;
+            continue;
         };
+
         total = total
-            .checked_add(amount)
+            .checked_add(output.value)
             .ok_or(PsbtReviewError::AmountOverflow)?;
     }
 
-    Ok(Some(total))
+    Ok(all_known.then_some(total))
 }
 
-/// PSBT review errors.
+/// PSBT review errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PsbtReviewError {
-    /// Input or output amounts exceeded Bitcoin's amount range.
+    /// PSBT maps do not match the unsigned transaction
+    #[error("PSBT input or output maps do not match its transaction")]
+    InvalidStructure,
+    /// Previous transaction data does not match the referenced output
+    #[error("PSBT input {index} has inconsistent previous output data")]
+    InvalidPreviousOutput {
+        /// Input with inconsistent previous output data
+        index: usize,
+    },
+    /// Input or output amounts exceeded Bitcoin's amount range
     #[error("PSBT amount total is too large")]
     AmountOverflow,
-    /// Known outputs are larger than known inputs.
+    /// Known outputs are larger than known inputs
     #[error("PSBT outputs exceed its inputs")]
     OutputsExceedInputs,
 }
@@ -266,6 +297,7 @@ mod tests {
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         )
         .expect("test mnemonic is valid");
+
         let wallet = NetworkWallet::open(
             &temp,
             SignerId::new(),
@@ -274,6 +306,7 @@ mod tests {
             &secret,
         )
         .expect("test wallet opens");
+
         let transaction = Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
@@ -288,6 +321,7 @@ mod tests {
                 script_pubkey: ScriptBuf::new(),
             }],
         };
+
         let mut psbt = Psbt::from_unsigned_tx(transaction).expect("test transaction is valid");
         psbt.inputs[0].witness_utxo = Some(TxOut {
             value: Amount::from_sat(10_000),

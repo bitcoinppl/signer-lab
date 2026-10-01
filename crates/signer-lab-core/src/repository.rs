@@ -4,13 +4,19 @@ use jiff::Timestamp;
 
 use crate::{
     AccountIndex, LabNetwork, LabStore, MnemonicSecret, NetworkWallet, OperationId, SecretStore,
-    SignerId, SignerName, VirtualSigner,
+    SecretStoreError, SignerId, SignerName, StorageError, VirtualSigner,
 };
 
 mod bulk;
+mod planning;
+
+pub use planning::{
+    BulkDestinationSpec, BulkPlanOperationError, BulkShape, InputReservation, OutputCount,
+    PlanBulk, PlannedBulkOperation,
+};
 
 pub use bulk::{
-    BulkExecutionError, BulkExecutionReport, RecoverableBulkOperation, ReservationReconciliation,
+    BulkExecutionError, BulkExecutionReport, CurrentBulkOperation, ReservationReconciliation,
 };
 
 /// A newly generated signer and the recovery words shown once to the user
@@ -224,17 +230,17 @@ pub enum RepositoryError {
     Import(#[source] crate::MnemonicImportError),
     /// Secret storage failed
     #[error("secret storage failed: {0}")]
-    SecretStore(#[source] crate::SecretStoreError),
+    SecretStore(#[source] SecretStoreError),
     /// Public metadata storage failed
     #[error("metadata storage failed: {0}")]
-    Storage(#[source] crate::StorageError),
+    Storage(#[source] StorageError),
     /// Metadata storage failed after Keychain storage
     #[error("metadata storage failed: {source}")]
     MetadataSave {
         /// Metadata write failure
-        source: crate::StorageError,
+        source: StorageError,
         /// Keychain rollback failure, when rollback also failed
-        rollback: Option<crate::SecretStoreError>,
+        rollback: Option<SecretStoreError>,
     },
     /// Another recoverable bulk operation already owns wallet inputs
     #[error("bulk operation {0} is already active for this network")]
@@ -246,6 +252,8 @@ pub enum RepositoryError {
 
 #[cfg(test)]
 mod tests {
+    use bitcoin::OutPoint;
+    use jiff::Timestamp;
     use std::{collections::HashMap, sync::Mutex};
 
     use bdk_wallet::{
@@ -255,8 +263,9 @@ mod tests {
 
     use super::SignerRepository;
     use crate::{
-        AddressType, BulkPlanner, BulkRequest, DestinationScripts, LabFeeRate, LabNetwork,
-        LabStore, MnemonicSecret, SecretStore, SecretStoreError, SignerId,
+        AddressType, BulkExecutionError, BulkPlan, BulkPlanner, BulkRequest, CurrentBulkOperation,
+        DestinationScripts, LabFeeRate, LabNetwork, LabStore, MnemonicSecret, OperationState,
+        SecretStore, SecretStoreError, SignerId, StoredOperation, VirtualSigner,
     };
 
     #[derive(Default)]
@@ -299,11 +308,14 @@ mod tests {
     async fn imported_signer_opens_both_test_networks() {
         let temp =
             std::env::temp_dir().join(format!("signer-lab-repository-{}", uuid::Uuid::new_v4()));
+
         let store = LabStore::create(temp.join("metadata.db"))
             .await
             .expect("test metadata store creates");
+
         let mut repository =
             SignerRepository::new(store, MemorySecretStore::default(), temp.join("wallets"));
+
         let signer = repository
             .import(
                 "Imported",
@@ -317,6 +329,7 @@ mod tests {
             let wallet = repository
                 .open_wallet(&signer, network)
                 .expect("test wallet opens");
+
             assert_eq!(wallet.network, network);
         }
 
@@ -329,8 +342,10 @@ mod tests {
         let store = LabStore::create(temp.join("metadata.db"))
             .await
             .expect("test metadata store creates");
+
         let mut repository =
             SignerRepository::new(store, MemorySecretStore::default(), temp.join("wallets"));
+
         let signer = repository
             .import(
                 "Before",
@@ -354,6 +369,7 @@ mod tests {
                 .as_str(),
             "After"
         );
+
         repository
             .open_wallet(&renamed, LabNetwork::MutinyNet)
             .expect("renamed signer keeps its secret and wallet access");
@@ -361,16 +377,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(temp);
     }
 
-    #[tokio::test]
-    async fn prepared_bulk_operation_recovers_and_cancel_releases_inputs() {
-        let temp =
-            std::env::temp_dir().join(format!("signer-lab-recovery-{}", uuid::Uuid::new_v4()));
-        let store = LabStore::create(temp.join("metadata.db"))
-            .await
-            .expect("test metadata store creates");
-        let mut repository =
-            SignerRepository::new(store, MemorySecretStore::default(), temp.join("wallets"));
-        let signer = repository
+    struct BulkFixture {
+        repository: SignerRepository<MemorySecretStore>,
+        signer: VirtualSigner,
+        plan: BulkPlan,
+        root: std::path::PathBuf,
+    }
+
+    impl BulkFixture {
+        async fn new() -> Self {
+            let temp =
+                std::env::temp_dir().join(format!("signer-lab-recovery-{}", uuid::Uuid::new_v4()));
+
+            let store = LabStore::create(temp.join("metadata.db"))
+                .await
+                .expect("test metadata store creates");
+
+            let mut repository =
+                SignerRepository::new(store, MemorySecretStore::default(), temp.join("wallets"));
+
+            let signer = repository
             .import(
                 "Bulk signer",
                 0,
@@ -378,93 +404,408 @@ mod tests {
             )
             .await
             .expect("test signer import succeeds");
-        let mut wallet = repository
-            .open_wallet(&signer, LabNetwork::MutinyNet)
-            .expect("test wallet opens");
+
+            let mut wallet = repository
+                .open_wallet(&signer, LabNetwork::MutinyNet)
+                .expect("test wallet opens");
+
+            let account = wallet.account_mut(AddressType::NativeSegwit);
+            let receive = account
+                .bdk()
+                .peek_address(KeychainKind::External, 0)
+                .address;
+
+            let funding = Transaction {
+                version: Version::TWO,
+                lock_time: LockTime::ZERO,
+                input: Vec::new(),
+                output: vec![TxOut {
+                    value: Amount::from_sat(50_000),
+                    script_pubkey: receive.script_pubkey(),
+                }],
+            };
+
+            account.bdk_mut().apply_unconfirmed_txs([(funding, 1)]);
+            account.persist().expect("funded test wallet persists");
+            let destinations = DestinationScripts::new(vec![receive.script_pubkey(); 2])
+                .expect("test destinations are valid");
+
+            let request = BulkRequest::fan_out(Amount::from_sat(2_000), destinations)
+                .expect("test fan-out request is valid");
+
+            let plan = BulkPlanner::new(account)
+                .plan(&request, LabFeeRate::DEFAULT)
+                .expect("funded test wallet can plan fan-out");
+
+            assert_eq!(account.snapshot().locked_utxo_count, 0);
+            drop(wallet);
+
+            Self {
+                repository,
+                signer,
+                plan,
+                root: temp,
+            }
+        }
+
+        fn lock_count(&self) -> usize {
+            self.repository
+                .open_wallet(&self.signer, LabNetwork::MutinyNet)
+                .expect("wallet opens")
+                .account(AddressType::NativeSegwit)
+                .snapshot()
+                .locked_utxo_count
+        }
+
+        async fn failed(&mut self, error: &str, legacy: bool) -> StoredOperation {
+            let mut operation = self.prepare().await;
+            operation.lifecycle.start(Timestamp::now()).expect("start");
+            operation
+                .lifecycle
+                .fail(0, error, Timestamp::now())
+                .expect("fail");
+
+            if legacy {
+                operation
+                    .plan
+                    .as_object_mut()
+                    .expect("plan object")
+                    .remove("acknowledged_at");
+            }
+
+            self.repository
+                .store
+                .save_operation(&operation)
+                .await
+                .expect("save failure");
+            operation
+        }
+
+        async fn prepare(&mut self) -> StoredOperation {
+            self.repository
+                .prepare_bulk_operation(self.signer.id, LabNetwork::MutinyNet, &self.plan)
+                .await
+                .expect("bulk operation saves")
+        }
+    }
+
+    impl Drop for BulkFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_bulk_operation_recovers_and_cancel_releases_inputs() {
+        let mut fixture = BulkFixture::new().await;
+        let operation = fixture.prepare().await;
+        let mut wallet = fixture
+            .repository
+            .open_wallet(&fixture.signer, LabNetwork::MutinyNet)
+            .expect("wallet opens");
+
         let account = wallet.account_mut(AddressType::NativeSegwit);
-        let receive = account
-            .bdk()
-            .peek_address(KeychainKind::External, 0)
-            .address;
-        let funding = Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: Vec::new(),
-            output: vec![TxOut {
-                value: Amount::from_sat(50_000),
-                script_pubkey: receive.script_pubkey(),
-            }],
-        };
-        account.bdk_mut().apply_unconfirmed_txs([(funding, 1)]);
-        account.persist().expect("funded test wallet persists");
-        let destinations = DestinationScripts::new(vec![receive.script_pubkey(); 2])
-            .expect("test destinations are valid");
-        let request = BulkRequest::fan_out(Amount::from_sat(2_000), destinations)
-            .expect("test fan-out request is valid");
-        let plan = BulkPlanner::new(account)
-            .plan(&request, LabFeeRate::DEFAULT)
-            .expect("funded test wallet can plan fan-out");
-        assert_eq!(account.snapshot().locked_utxo_count, 0);
+        let orphan = OutPoint::default();
+        account.bdk_mut().lock_outpoint(orphan);
+        account.persist().expect("orphan lock persists");
         drop(wallet);
 
-        let operation = repository
-            .prepare_bulk_operation(signer.id, LabNetwork::MutinyNet, &plan)
+        let reconciliation = fixture
+            .repository
+            .reconcile_bulk_reservations(&fixture.signer, LabNetwork::MutinyNet)
             .await
-            .expect("test bulk operation saves");
-        let reconciliation = repository
-            .reconcile_bulk_reservations(&signer, LabNetwork::MutinyNet)
-            .await
-            .expect("test reservations reconcile");
+            .expect("reservations reconcile");
+
         assert_eq!(reconciliation.active_reservations, 1);
-        assert_eq!(reconciliation.orphaned_locks_released, 0);
-        let wallet = repository
-            .open_wallet(&signer, LabNetwork::MutinyNet)
-            .expect("test wallet opens");
-        assert_eq!(
-            wallet
+        assert_eq!(reconciliation.orphaned_locks_released, 1);
+        assert_eq!(fixture.lock_count(), 1);
+        let wallet = fixture
+            .repository
+            .open_wallet(&fixture.signer, LabNetwork::MutinyNet)
+            .expect("wallet opens");
+
+        assert!(
+            !wallet
                 .account(AddressType::NativeSegwit)
-                .snapshot()
-                .locked_utxo_count,
-            1
+                .bdk()
+                .is_outpoint_locked(orphan)
         );
+
         drop(wallet);
-        let recovered = repository
-            .recoverable_bulk_operation(signer.id, LabNetwork::MutinyNet)
+        let recovered = fixture
+            .repository
+            .current_bulk_operation(fixture.signer.id, LabNetwork::MutinyNet)
             .await
-            .expect("test recoverable operation loads")
-            .expect("test operation is present");
-        assert_eq!(recovered.operation_id, operation.lifecycle.id);
-        assert_eq!(recovered.plan, plan);
+            .expect("recoverable operation loads")
+            .expect("operation is present");
+
+        let CurrentBulkOperation::Active { operation_id, plan } = recovered else {
+            panic!("active operation");
+        };
+        assert_eq!(operation_id, operation.lifecycle.id);
+        assert_eq!(plan, fixture.plan);
         assert!(
-            repository
-                .recoverable_bulk_operation(signer.id, LabNetwork::Testnet4)
+            fixture
+                .repository
+                .current_bulk_operation(fixture.signer.id, LabNetwork::Testnet4)
                 .await
-                .expect("test operation lookup succeeds")
+                .expect("operation lookup succeeds")
                 .is_none()
         );
 
-        repository
-            .cancel_bulk_operation(&signer, LabNetwork::MutinyNet, operation.lifecycle.id)
+        fixture
+            .repository
+            .cancel_bulk_operation(
+                &fixture.signer,
+                LabNetwork::MutinyNet,
+                operation.lifecycle.id,
+            )
             .await
-            .expect("test bulk operation cancels");
-        let wallet = repository
-            .open_wallet(&signer, LabNetwork::MutinyNet)
-            .expect("test wallet opens");
+            .expect("operation cancels");
+
+        assert_eq!(fixture.lock_count(), 0);
+        assert!(
+            fixture
+                .repository
+                .current_bulk_operation(fixture.signer.id, LabNetwork::MutinyNet)
+                .await
+                .expect("operation lookup succeeds")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_bulk_actions_do_not_change_locks() {
+        let mut fixture = BulkFixture::new().await;
+        let mut operation = fixture.prepare().await;
+        fixture
+            .repository
+            .reconcile_bulk_reservations(&fixture.signer, LabNetwork::MutinyNet)
+            .await
+            .expect("reservations reconcile");
+
+        operation
+            .lifecycle
+            .start(Timestamp::now())
+            .expect("operation starts");
+
+        fixture
+            .repository
+            .store
+            .save_operation(&operation)
+            .await
+            .expect("running operation saves");
+
+        assert!(matches!(
+            fixture
+                .repository
+                .cancel_bulk_operation(
+                    &fixture.signer,
+                    LabNetwork::MutinyNet,
+                    operation.lifecycle.id
+                )
+                .await,
+            Err(BulkExecutionError::InvalidState)
+        ));
+
+        assert_eq!(fixture.lock_count(), 1);
+
+        operation.lifecycle.state = OperationState::Prepared;
+        fixture
+            .repository
+            .store
+            .save_operation(&operation)
+            .await
+            .expect("prepared operation saves");
+
+        fixture
+            .repository
+            .cancel_bulk_operation(
+                &fixture.signer,
+                LabNetwork::MutinyNet,
+                operation.lifecycle.id,
+            )
+            .await
+            .expect("operation cancels");
+
+        assert!(matches!(
+            fixture
+                .repository
+                .execute_bulk_operation(
+                    &fixture.signer,
+                    LabNetwork::MutinyNet,
+                    operation.lifecycle.id
+                )
+                .await,
+            Err(BulkExecutionError::InvalidState)
+        ));
+
+        assert_eq!(fixture.lock_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_operations_remain_visible_until_acknowledged() {
+        let mut fixture = BulkFixture::new().await;
+        let older = fixture.failed("first failure", true).await;
+        let newer = fixture.failed("second failure", false).await;
+        let current = fixture
+            .repository
+            .current_bulk_operation(fixture.signer.id, LabNetwork::MutinyNet)
+            .await
+            .expect("current");
+
         assert_eq!(
-            wallet
-                .account(AddressType::NativeSegwit)
-                .snapshot()
-                .locked_utxo_count,
-            0
+            current,
+            Some(CurrentBulkOperation::Failed {
+                operation_id: newer.lifecycle.id,
+                plan: fixture.plan.clone(),
+                failed_index: 0,
+                accepted_txids: Vec::new(),
+                error: "second failure".to_owned(),
+            })
         );
+
         assert!(
-            repository
-                .recoverable_bulk_operation(signer.id, LabNetwork::MutinyNet)
+            fixture
+                .repository
+                .current_bulk_operation(fixture.signer.id, LabNetwork::Testnet4)
                 .await
-                .expect("test operation lookup succeeds")
+                .expect("other network")
                 .is_none()
         );
 
-        let _ = std::fs::remove_dir_all(temp);
+        fixture
+            .repository
+            .acknowledge_failed_bulk_operation(fixture.signer.id, newer.lifecycle.id)
+            .await
+            .expect("acknowledge newest");
+
+        let result = fixture
+            .repository
+            .current_bulk_operation(fixture.signer.id, LabNetwork::MutinyNet)
+            .await
+            .expect("next failure");
+
+        assert!(matches!(
+            result,
+            Some(CurrentBulkOperation::Failed { operation_id, .. }) if operation_id == older.lifecycle.id
+        ));
+
+        fixture
+            .repository
+            .acknowledge_failed_bulk_operation(fixture.signer.id, older.lifecycle.id)
+            .await
+            .expect("acknowledge legacy");
+
+        assert!(
+            fixture
+                .repository
+                .current_bulk_operation(fixture.signer.id, LabNetwork::MutinyNet)
+                .await
+                .expect("no failures")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_preserves_failed_state_and_first_timestamp() {
+        let mut fixture = BulkFixture::new().await;
+        let failed = fixture.failed("relay failure", true).await;
+        fixture
+            .repository
+            .acknowledge_failed_bulk_operation(fixture.signer.id, failed.lifecycle.id)
+            .await
+            .expect("acknowledge");
+
+        let saved = fixture
+            .repository
+            .store
+            .operation(failed.lifecycle.id)
+            .await
+            .expect("load")
+            .expect("saved");
+
+        assert_eq!(saved.lifecycle, failed.lifecycle);
+        assert!(saved.plan["acknowledged_at"].is_string());
+        fixture
+            .repository
+            .acknowledge_failed_bulk_operation(fixture.signer.id, failed.lifecycle.id)
+            .await
+            .expect("repeat acknowledgement");
+
+        assert_eq!(
+            fixture
+                .repository
+                .store
+                .operation(failed.lifecycle.id)
+                .await
+                .expect("load again")
+                .expect("saved again"),
+            saved
+        );
+
+        let (network, plan) = fixture
+            .repository
+            .saved_bulk_plan(fixture.signer.id, failed.lifecycle.id)
+            .await
+            .expect("failed plan remains available");
+
+        assert_eq!(network, LabNetwork::MutinyNet);
+        assert_eq!(plan, fixture.plan);
+    }
+
+    #[tokio::test]
+    async fn active_operation_takes_priority_and_cannot_be_acknowledged() {
+        let mut fixture = BulkFixture::new().await;
+        let failed = fixture.failed("failure", false).await;
+        let mut active = fixture.prepare().await;
+        // force the active operation to sort after the failure in the newest-first query
+        active.lifecycle.updated_at = Timestamp::from_second(0).expect("epoch");
+        fixture
+            .repository
+            .store
+            .save_operation(&active)
+            .await
+            .expect("save active");
+
+        let result = fixture
+            .repository
+            .current_bulk_operation(fixture.signer.id, LabNetwork::MutinyNet)
+            .await
+            .expect("current active");
+
+        assert!(matches!(
+            result,
+            Some(CurrentBulkOperation::Active { operation_id, .. }) if operation_id == active.lifecycle.id
+        ));
+
+        let result = fixture
+            .repository
+            .acknowledge_failed_bulk_operation(fixture.signer.id, active.lifecycle.id)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(BulkExecutionError::NotFailed(id)) if id == active.lifecycle.id
+        ));
+
+        assert_eq!(
+            fixture
+                .repository
+                .store
+                .operation(active.lifecycle.id)
+                .await
+                .expect("load active")
+                .expect("active"),
+            active
+        );
+
+        assert!(matches!(
+            fixture
+                .repository
+                .acknowledge_failed_bulk_operation(SignerId::new(), failed.lifecycle.id)
+                .await,
+            Err(BulkExecutionError::WrongSigner)
+        ));
     }
 }

@@ -36,7 +36,8 @@ pub mod wallet;
 pub use bulk::{
     BulkPlan, BulkPlanError, BulkPlanner, BulkRequest, DestinationScripts, PlannedTransaction,
 };
-pub use destination::{Destination, DestinationError, ExternalDescriptor, FixedAddress};
+pub(crate) use destination::Destination;
+pub use destination::{DestinationError, ExternalDescriptor, FixedAddress};
 pub use domain::{
     AccountIndex, AccountIndexError, AddressType, LabNetwork, SignerId, SignerName,
     SignerNameError, VirtualSigner,
@@ -53,8 +54,9 @@ pub use operation::{
 };
 pub use qr::{QrDensity, QrFrames, QrScanProgress, QrScanner, QrTransport, QrTransportError};
 pub use repository::{
-    BulkExecutionError, BulkExecutionReport, CreatedSigner, RecoverableBulkOperation,
-    RepositoryError, ReservationReconciliation, SignerRepository,
+    BulkDestinationSpec, BulkExecutionError, BulkExecutionReport, BulkPlanOperationError,
+    BulkShape, CreatedSigner, CurrentBulkOperation, InputReservation, OutputCount, PlanBulk,
+    PlannedBulkOperation, RepositoryError, ReservationReconciliation, SignerRepository,
 };
 pub use secret_store::{KeychainSecretStore, SecretStore, SecretStoreError};
 pub use seed_qr::{CompactSeedQr, SeedQr, SeedQrError, StandardSeedQr};

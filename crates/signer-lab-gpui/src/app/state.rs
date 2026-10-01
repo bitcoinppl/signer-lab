@@ -1,199 +1,156 @@
-use std::sync::Arc;
-
-use gpui::{Context, Empty, EntityId, Image, IntoElement, Pixels, Render, Window, px};
+use gpui_kit::{Image, SharedString, Task};
 use signer_lab_core::{
-    AccountPublicData, AddressType, BulkPlan, Destination, NetworkWallet, OperationId,
-    OperationKind, QrFrames, QrTransport, SignerId, VirtualSigner, WalletAccountSnapshot,
+    AddressType, ExportArtifact, ExportPayload, LabNetwork, QrFrames, SignedPsbt, SignerId,
+    SyncControl,
 };
-use tokio_util::sync::CancellationToken;
-
-use super::error_message;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(usize)]
-pub(super) enum ResizableTextArea {
-    PsbtInput,
-    WorkflowOutput,
-    SeedQrOutput,
-}
-
-impl ResizableTextArea {
-    fn minimum_height(self) -> Pixels {
-        match self {
-            Self::PsbtInput => px(120.0),
-            Self::WorkflowOutput => px(96.0),
-            Self::SeedQrOutput => px(72.0),
-        }
-    }
-
-    fn maximum_height(self) -> Pixels {
-        match self {
-            Self::PsbtInput => px(520.0),
-            Self::WorkflowOutput => px(480.0),
-            Self::SeedQrOutput => px(240.0),
-        }
-    }
-}
-
-pub(super) struct TextAreaHeights {
-    psbt_input: Pixels,
-    workflow_output: Pixels,
-    seed_qr_output: Pixels,
-}
-
-impl Default for TextAreaHeights {
-    fn default() -> Self {
-        Self {
-            psbt_input: px(280.0),
-            workflow_output: px(150.0),
-            seed_qr_output: px(72.0),
-        }
-    }
-}
-
-impl TextAreaHeights {
-    pub(super) fn height(&self, area: ResizableTextArea) -> Pixels {
-        match area {
-            ResizableTextArea::PsbtInput => self.psbt_input,
-            ResizableTextArea::WorkflowOutput => self.workflow_output,
-            ResizableTextArea::SeedQrOutput => self.seed_qr_output,
-        }
-    }
-
-    pub(super) fn resize(&mut self, area: ResizableTextArea, height: Pixels) {
-        let height = height.max(area.minimum_height()).min(area.maximum_height());
-
-        match area {
-            ResizableTextArea::PsbtInput => self.psbt_input = height,
-            ResizableTextArea::WorkflowOutput => self.workflow_output = height,
-            ResizableTextArea::SeedQrOutput => self.seed_qr_output = height,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct TextAreaDrag {
-    owner: EntityId,
-    area: ResizableTextArea,
-    start_y: Pixels,
-    start_height: Pixels,
-}
-
-impl TextAreaDrag {
-    pub(super) fn new(owner: EntityId, area: ResizableTextArea, start_height: Pixels) -> Self {
-        Self {
-            owner,
-            area,
-            start_y: px(0.0),
-            start_height,
-        }
-    }
-
-    pub(super) fn started_at(&self, start_y: Pixels) -> Self {
-        Self {
-            start_y,
-            ..self.clone()
-        }
-    }
-
-    pub(super) fn belongs_to(&self, owner: EntityId, area: ResizableTextArea) -> bool {
-        self.owner == owner && self.area == area
-    }
-
-    pub(super) fn height_at(&self, current_y: Pixels) -> Pixels {
-        self.start_height + current_y - self.start_y
-    }
-}
-
-impl Render for TextAreaDrag {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
+use std::{cell::RefCell, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Page {
     Wallet,
+    SeedQr,
     Export,
     Sign,
     Bulk,
-    SeedQr,
 }
 
 impl Page {
     pub(super) const ALL: [Self; 5] = [
         Self::Wallet,
+        Self::SeedQr,
         Self::Export,
         Self::Sign,
         Self::Bulk,
-        Self::SeedQr,
     ];
 
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Wallet => "Wallet",
-            Self::Export => "Exports",
-            Self::Sign => "Sign PSBT",
+            Self::SeedQr => "Seed QR",
+            Self::Export => "Export",
+            Self::Sign => "Sign",
             Self::Bulk => "Bulk",
-            Self::SeedQr => "SeedQR",
         }
     }
 }
 
-#[derive(Clone)]
-pub(super) struct WalletView {
-    pub(super) accounts: Vec<AccountPublicData>,
-    pub(super) snapshots: Vec<WalletAccountSnapshot>,
+pub(super) enum Activity {
+    Idle,
+    Working(SharedString),
+    Syncing { control: SyncControl },
 }
 
-impl WalletView {
-    pub(super) fn from_wallet(wallet: &NetworkWallet) -> Result<Self, String> {
-        let accounts = wallet.public_accounts().map_err(error_message)?;
-        let snapshots = address_types()
-            .into_iter()
-            .map(|address_type| wallet.account(address_type).snapshot())
-            .collect();
+impl Drop for Activity {
+    fn drop(&mut self) {
+        if let Self::Syncing { control } = self {
+            control.cancel();
+        }
+    }
+}
 
-        Ok(Self {
-            accounts,
-            snapshots,
+pub(super) enum Outcome {
+    Info(SharedString),
+    Error(SharedString),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct WalletScope {
+    pub(super) signer: Option<SignerId>,
+    pub(super) network: LabNetwork,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ResultScope {
+    Wallet,
+    Page(Page),
+}
+
+/// Output carries its owning page so another workflow cannot display it
+pub(super) enum WorkflowOutput {
+    Export {
+        artifact: ExportArtifact,
+        playback: Option<QrPlayback>,
+    },
+    SeedQr {
+        playback: QrPlayback,
+    },
+    Signed {
+        signed: SignedPsbt,
+        playback: QrPlayback,
+    },
+    Bulk {
+        summary: SharedString,
+    },
+}
+
+impl WorkflowOutput {
+    pub(super) const fn page(&self) -> Page {
+        match self {
+            Self::Export { .. } => Page::Export,
+            Self::SeedQr { .. } => Page::SeedQr,
+            Self::Signed { .. } => Page::Sign,
+            Self::Bulk { .. } => Page::Bulk,
+        }
+    }
+
+    pub(super) fn playback_mut(&mut self) -> Option<&mut QrPlayback> {
+        match self {
+            Self::Export { playback, .. } => playback.as_mut(),
+            Self::SeedQr { playback } | Self::Signed { playback, .. } => Some(playback),
+            Self::Bulk { .. } => None,
+        }
+    }
+
+    pub(super) fn text(&self) -> Option<String> {
+        Some(match self {
+            Self::Export { artifact, .. } => match &artifact.payload {
+                ExportPayload::Text(text) => text.clone(),
+                ExportPayload::Ur { frames, .. } => frames.join("\n"),
+            },
+            Self::SeedQr { .. } => return None,
+            Self::Signed { signed, .. } => signed.psbt().to_string(),
+            Self::Bulk { summary } => summary.to_string(),
         })
     }
 }
 
-pub(super) struct CameraState {
-    generation: u64,
-    control: CancellationToken,
-    preview: Option<Arc<Image>>,
+pub(super) const fn address_types() -> [AddressType; 3] {
+    AddressType::ALL
 }
 
-impl CameraState {
-    pub(super) fn new(generation: u64) -> Self {
-        Self {
-            generation,
-            control: CancellationToken::new(),
-            preview: None,
+/// UI labels stay separate from the core address-type model
+pub(super) trait AddressTypeLabels {
+    /// Names an address type in compact controls
+    fn short_label(self) -> &'static str;
+    /// Names an address type in account details
+    fn full_label(self) -> &'static str;
+    /// Names the account script format
+    fn script_label(self) -> &'static str;
+}
+
+impl AddressTypeLabels for AddressType {
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::Legacy => "Legacy",
+            Self::WrappedSegwit => "Nested",
+            Self::NativeSegwit => "Native",
         }
     }
 
-    pub(super) const fn generation(&self) -> u64 {
-        self.generation
+    fn full_label(self) -> &'static str {
+        match self {
+            Self::Legacy => "Legacy",
+            Self::WrappedSegwit => "Nested SegWit",
+            Self::NativeSegwit => "Native SegWit",
+        }
     }
 
-    pub(super) fn control(&self) -> CancellationToken {
-        self.control.clone()
-    }
-
-    pub(super) fn preview(&self) -> Option<&Arc<Image>> {
-        self.preview.as_ref()
-    }
-
-    pub(super) fn set_preview(&mut self, preview: Arc<Image>) {
-        self.preview = Some(preview);
-    }
-
-    pub(super) fn cancel(self) {
-        self.control.cancel();
+    fn script_label(self) -> &'static str {
+        match self {
+            Self::Legacy => "P2PKH",
+            Self::WrappedSegwit => "P2SH-P2WPKH",
+            Self::NativeSegwit => "P2WPKH",
+        }
     }
 }
 
@@ -211,14 +168,6 @@ impl QrPreviewSize {
             Self::Small => 180,
             Self::Medium => 260,
             Self::Large => 336,
-        }
-    }
-
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::Small => "Small",
-            Self::Medium => "Medium",
-            Self::Large => "Large",
         }
     }
 
@@ -252,10 +201,9 @@ impl QrAnimation {
     }
 }
 
-pub(super) enum QrPlayback {
+enum QrSequence {
     Static(String),
     Animated {
-        transport: QrTransport,
         frames: Vec<String>,
         index: usize,
         interval_ms: u64,
@@ -263,7 +211,7 @@ pub(super) enum QrPlayback {
     },
 }
 
-impl QrPlayback {
+impl QrSequence {
     pub(super) fn static_frame(frame: String) -> Self {
         Self::Static(frame)
     }
@@ -272,9 +220,7 @@ impl QrPlayback {
         if qr.frames.is_empty() {
             return None;
         }
-
         Some(Self::Animated {
-            transport: qr.transport,
             frames: qr.frames,
             index: 0,
             interval_ms: qr.interval_ms,
@@ -289,13 +235,6 @@ impl QrPlayback {
         }
     }
 
-    pub(super) fn first_frame(&self) -> &str {
-        match self {
-            Self::Static(frame) => frame,
-            Self::Animated { frames, .. } => &frames[0],
-        }
-    }
-
     pub(super) const fn frame_index(&self) -> usize {
         match self {
             Self::Static(_) => 0,
@@ -307,13 +246,6 @@ impl QrPlayback {
         match self {
             Self::Static(_) => 1,
             Self::Animated { frames, .. } => frames.len(),
-        }
-    }
-
-    pub(super) const fn transport(&self) -> Option<QrTransport> {
-        match self {
-            Self::Static(_) => None,
-            Self::Animated { transport, .. } => Some(*transport),
         }
     }
 
@@ -345,6 +277,7 @@ impl QrPlayback {
         else {
             return None;
         };
+
         if frames.len() < 2 {
             return None;
         }
@@ -362,167 +295,112 @@ impl QrPlayback {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum RenameState {
-    #[default]
-    Idle,
-    Editing(SignerId),
+struct QrImageCache {
+    index: usize,
+    side: u16,
+    image: Arc<Image>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum BulkMode {
-    FanOut,
-    Batch,
-    Consolidate,
+/// Playback owns both its animation task and its rendered current-frame cache
+pub(super) struct QrPlayback {
+    sequence: QrSequence,
+    cache: RefCell<Option<QrImageCache>>,
+    pub(super) timer: Option<Task<()>>,
 }
 
-impl BulkMode {
-    pub(super) const ALL: [Self; 3] = [Self::FanOut, Self::Batch, Self::Consolidate];
+impl QrPlayback {
+    pub(super) fn static_frame(frame: String) -> Self {
+        Self::new(QrSequence::static_frame(frame))
+    }
 
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::FanOut => "Fan out",
-            Self::Batch => "Batch",
-            Self::Consolidate => "Consolidate",
+    pub(super) fn animated(frames: QrFrames) -> Option<Self> {
+        QrSequence::animated(frames).map(Self::new)
+    }
+
+    fn new(sequence: QrSequence) -> Self {
+        Self {
+            sequence,
+            cache: RefCell::new(None),
+            timer: None,
         }
     }
 
-    pub(super) const fn from_operation_kind(kind: OperationKind) -> Self {
-        match kind {
-            OperationKind::FanOut => Self::FanOut,
-            OperationKind::Batch => Self::Batch,
-            OperationKind::Consolidate => Self::Consolidate,
+    pub(super) fn current_frame(&self) -> &str {
+        self.sequence.current_frame()
+    }
+
+    pub(super) const fn frame_index(&self) -> usize {
+        self.sequence.frame_index()
+    }
+
+    pub(super) fn frame_count(&self) -> usize {
+        self.sequence.frame_count()
+    }
+
+    pub(super) fn animation_interval_ms(&self) -> Option<u64> {
+        self.sequence.animation_interval_ms()
+    }
+
+    pub(super) const fn animation(&self) -> Option<QrAnimation> {
+        self.sequence.animation()
+    }
+
+    pub(super) fn toggle_animation(&mut self) -> Option<QrAnimation> {
+        self.sequence.toggle_animation()
+    }
+
+    pub(super) fn advance(&mut self) {
+        self.sequence.advance();
+    }
+
+    pub(super) fn image(&self, side: u16) -> Result<Arc<Image>, String> {
+        let mut cache = self.cache.borrow_mut();
+        if let Some(cached) = cache
+            .as_ref()
+            .filter(|cached| cached.index == self.frame_index() && cached.side == side)
+        {
+            return Ok(Arc::clone(&cached.image));
         }
+
+        let image = crate::qr_image::render(self.current_frame(), u32::from(side))?;
+        *cache = Some(QrImageCache {
+            index: self.frame_index(),
+            side,
+            image: Arc::clone(&image),
+        });
+        Ok(image)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum DestinationMode {
-    FixedAddress,
-    AccountXpub,
-    Descriptor,
-    SavedSigner,
-}
-
-impl DestinationMode {
-    pub(super) const ALL: [Self; 4] = [
-        Self::FixedAddress,
-        Self::AccountXpub,
-        Self::Descriptor,
-        Self::SavedSigner,
-    ];
-
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::FixedAddress => "One address",
-            Self::AccountXpub => "Account XPUB",
-            Self::Descriptor => "Descriptor",
-            Self::SavedSigner => "Saved signer",
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(super) enum BulkDestinationInput {
-    Public(Destination),
-    SavedSigner(VirtualSigner),
-}
-
-/// The mutually exclusive local states of the bulk-operation workflow
-///
-/// An operation identifier is only available after a plan exists. A failed operation may lack a
-/// local plan when recovery loading failed, but it remains cancellable through its persisted ID
-pub(super) enum BulkWorkflow {
-    Empty,
-    Prepared {
-        operation_id: OperationId,
-        plan: BulkPlan,
-    },
-    Failed {
-        operation_id: OperationId,
-        plan: Option<BulkPlan>,
-    },
-}
-
-impl BulkWorkflow {
-    pub(super) const fn empty() -> Self {
-        Self::Empty
-    }
-
-    pub(super) const fn prepared(operation_id: OperationId, plan: BulkPlan) -> Self {
-        Self::Prepared { operation_id, plan }
-    }
-
-    pub(super) const fn failed(operation_id: OperationId, plan: Option<BulkPlan>) -> Self {
-        Self::Failed { operation_id, plan }
-    }
-
-    pub(super) const fn operation_id(&self) -> Option<OperationId> {
-        match self {
-            Self::Empty => None,
-            Self::Prepared { operation_id, .. } | Self::Failed { operation_id, .. } => {
-                Some(*operation_id)
-            }
-        }
-    }
-
-    pub(super) const fn plan(&self) -> Option<&BulkPlan> {
-        match self {
-            Self::Empty => None,
-            Self::Prepared { plan, .. } => Some(plan),
-            Self::Failed { plan, .. } => plan.as_ref(),
-        }
-    }
-
-    pub(super) const fn is_failed(&self) -> bool {
-        matches!(self, Self::Failed { .. })
-    }
-}
-
-const fn address_types() -> [AddressType; 3] {
-    [
-        AddressType::Legacy,
-        AddressType::WrappedSegwit,
-        AddressType::NativeSegwit,
-    ]
 }
 
 #[cfg(test)]
 mod tests {
-    use gpui::px;
+    use super::{QrAnimation, QrPlayback};
     use signer_lab_core::{QrFrames, QrTransport};
-
-    use super::{QrAnimation, QrPlayback, ResizableTextArea, TextAreaHeights};
-
-    #[test]
-    fn text_area_heights_are_independent_and_stay_usable() {
-        let mut heights = TextAreaHeights::default();
-
-        heights.resize(ResizableTextArea::WorkflowOutput, px(20.0));
-        assert_eq!(heights.height(ResizableTextArea::WorkflowOutput), px(96.0));
-        assert_eq!(heights.height(ResizableTextArea::PsbtInput), px(280.0));
-
-        heights.resize(ResizableTextArea::WorkflowOutput, px(900.0));
-        assert_eq!(heights.height(ResizableTextArea::WorkflowOutput), px(480.0));
-        assert_eq!(heights.height(ResizableTextArea::SeedQrOutput), px(72.0));
-    }
+    use std::sync::Arc;
 
     #[test]
-    fn animated_qr_playback_has_explicit_pause_and_resume_transitions() {
-        let frames = QrFrames {
+    fn playback_pauses_and_invalidates_only_changed_images() {
+        let mut playback = QrPlayback::animated(QrFrames {
             transport: QrTransport::Bbqr,
-            frames: vec!["first".to_owned(), "second".to_owned()],
+            frames: vec!["first".into(), "second".into()],
             interval_ms: 250,
-        };
-        let mut playback = QrPlayback::animated(frames).expect("frames are not empty");
+        })
+        .expect("frames");
 
-        assert_eq!(playback.animation(), Some(QrAnimation::Playing));
-        assert_eq!(playback.animation_interval_ms(), Some(250));
+        let image = playback.image(260).expect("QR");
+        assert!(Arc::ptr_eq(
+            &image,
+            &playback.image(260).expect("cached QR")
+        ));
 
         assert_eq!(playback.toggle_animation(), Some(QrAnimation::Paused));
         assert_eq!(playback.animation_interval_ms(), None);
-
         assert_eq!(playback.toggle_animation(), Some(QrAnimation::Playing));
-        assert_eq!(playback.animation_interval_ms(), Some(250));
+        playback.advance();
+        assert!(!Arc::ptr_eq(&image, &playback.image(260).expect("next QR")));
+        assert!(!Arc::ptr_eq(
+            &playback.image(260).expect("QR"),
+            &playback.image(180).expect("small QR")
+        ));
     }
 }

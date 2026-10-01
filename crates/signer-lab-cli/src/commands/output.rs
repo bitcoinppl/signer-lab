@@ -80,9 +80,15 @@ pub(super) struct BulkCancellationOutput {
 
 #[derive(Debug, Serialize)]
 pub(super) struct BulkPlanOutput {
+    pub(super) destination_range: Option<std::ops::RangeInclusive<u32>>,
     pub(super) operation_id: OperationId,
     pub(super) kind: signer_lab_core::OperationKind,
     pub(super) network: LabNetwork,
     pub(super) plan: BulkPlan,
     pub(super) reservation_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct BulkDismissalOutput {
+    pub(super) acknowledged_operation_id: OperationId,
 }

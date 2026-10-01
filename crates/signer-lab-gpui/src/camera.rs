@@ -68,6 +68,7 @@ fn scan_code<T>(
     let requested =
         RequestedFormat::new::<LumaFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
     let mut camera = Camera::new(CameraIndex::Index(0), requested).map_err(error_message)?;
+
     camera.open_stream().map_err(error_message)?;
     let mut last_preview = None;
 
@@ -85,22 +86,30 @@ fn scan_code<T>(
                 resolution.height(),
                 640,
             )));
+
             last_preview = Some(Instant::now());
         }
+
         let detected = rxing::helpers::detect_in_luma(
             pixels,
             resolution.width(),
             resolution.height(),
             Some(rxing::BarcodeFormat::QR_CODE),
         );
+
         let Ok(detected) = detected else {
             continue;
         };
+
         let Some(result) = decode(&detected) else {
             continue;
         };
 
         camera.stop_stream().map_err(error_message)?;
+        if control.is_cancelled() {
+            return Err("camera scan was cancelled".to_owned());
+        }
+
         return result;
     }
 
@@ -140,6 +149,7 @@ fn luma_bmp(pixels: &[u8], width: u32, height: u32, maximum_width: u32) -> Vec<u
             let value = pixels[(source_y * width + source_x) as usize];
             bmp.extend_from_slice(&[value, value, value]);
         }
+
         bmp.extend(std::iter::repeat_n(0, padding as usize));
     }
 
@@ -158,6 +168,7 @@ fn seed_qr_result(detected: &RXingResult) -> Option<Result<MnemonicSecret, Strin
     let Some(RXingResultMetadataValue::ByteSegments(segments)) = metadata else {
         return None;
     };
+
     let [entropy] = segments.as_slice() else {
         return None;
     };
@@ -178,7 +189,6 @@ fn seed_qr_payload(text: &str, raw_bytes: &[u8]) -> Option<Result<MnemonicSecret
     if !matches!(raw_bytes.len(), 16 | 20 | 24 | 28 | 32) {
         return None;
     }
-
     Some(
         CompactSeedQr::parse(raw_bytes)
             .map(CompactSeedQr::into_secret)
@@ -192,6 +202,7 @@ fn error_message(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
+    use gpui_kit::{DevicePixels, Image, ImageFormat, TestAppContext, size};
     use rxing::{BarcodeFormat, Writer as _, qrcode::QRCodeWriter};
 
     use super::{luma_bmp, read_seed_qr_image, seed_qr_payload, seed_qr_result};
@@ -253,6 +264,25 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    #[gpui_kit::test]
+    fn camera_preview_decodes_with_the_gpui_image_path(cx: &mut TestAppContext) {
+        let image = Image::from_bytes(ImageFormat::Bmp, luma_bmp(&[0, 64, 128, 255], 2, 2, 640));
+        let decoded = cx
+            .update(|cx| image.to_image_data(cx.svg_renderer()))
+            .expect("GPUI decodes the camera BMP");
+
+        assert_eq!(decoded.size(0), size(DevicePixels(2), DevicePixels(2)));
+        assert_eq!(
+            decoded.as_bytes(0),
+            Some(
+                [
+                    0, 0, 0, 255, 64, 64, 64, 255, 128, 128, 128, 255, 255, 255, 255, 255
+                ]
+                .as_slice()
+            )
+        );
+    }
+
     #[test]
     fn camera_preview_encodes_a_valid_size_bmp() {
         let bmp = luma_bmp(&[0, 64, 128, 255], 2, 2, 640);
@@ -266,6 +296,7 @@ mod tests {
             ),
             2
         );
+
         assert_eq!(
             u32::from_le_bytes(
                 bmp[22..26]
@@ -274,6 +305,7 @@ mod tests {
             ),
             2
         );
+
         assert_eq!(bmp.len(), 70);
     }
 }

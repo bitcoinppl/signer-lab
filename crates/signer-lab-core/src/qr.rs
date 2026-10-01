@@ -27,9 +27,24 @@ pub enum QrTransport {
 
 /// QR density controls for both transports
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "UncheckedDensity")]
 pub struct QrDensity {
     ur_fragment_len: usize,
     bbqr_version: u8,
+}
+
+#[derive(Deserialize)]
+struct UncheckedDensity {
+    ur_fragment_len: usize,
+    bbqr_version: u8,
+}
+
+impl TryFrom<UncheckedDensity> for QrDensity {
+    type Error = QrTransportError;
+
+    fn try_from(value: UncheckedDensity) -> Result<Self, Self::Error> {
+        Self::new(value.ur_fragment_len, value.bbqr_version)
+    }
 }
 
 impl QrDensity {
@@ -196,8 +211,9 @@ impl QrScanner {
             return self.receive_bbqr(frame);
         }
 
-        if frame.to_ascii_lowercase().starts_with("ur:") {
-            return self.receive_ur(frame);
+        let normalized = frame.to_ascii_lowercase();
+        if normalized.starts_with("ur:") {
+            return self.receive_ur(&normalized);
         }
 
         Err(QrTransportError::UnknownTransport)
@@ -222,10 +238,11 @@ impl QrScanner {
             return Err(QrTransportError::MixedTransports);
         };
 
-        seen.insert(frame.to_owned());
         let result = joiner
             .add_part(frame.to_owned())
             .map_err_str(QrTransportError::Bbqr)?;
+
+        seen.insert(frame.to_owned());
 
         if let ContinuousJoinResult::Complete(joined) = result {
             if joined.file_type != FileType::Psbt {
@@ -247,18 +264,13 @@ impl QrScanner {
     }
 
     fn receive_ur(&mut self, frame: &str) -> Result<QrScanProgress, QrTransportError> {
+        if matches!(self.mode, ScannerMode::Bbqr { .. }) {
+            return Err(QrTransportError::MixedTransports);
+        }
+
         let ur = UR::parse(frame).map_err_str(QrTransportError::Ur)?;
         if ur.as_type() != "crypto-psbt" {
             return Err(QrTransportError::WrongPayload);
-        }
-
-        if !ur.is_multi_part() {
-            let crypto_psbt =
-                CryptoPsbt::from_ur_string(frame).map_err_str(QrTransportError::Ur)?;
-            return Ok(QrScanProgress::Complete {
-                transport: QrTransport::Ur,
-                psbt: crypto_psbt.psbt().clone(),
-            });
         }
 
         if matches!(self.mode, ScannerMode::Empty) {
@@ -268,12 +280,23 @@ impl QrScanner {
             };
         }
 
+        if !ur.is_multi_part() {
+            let crypto_psbt =
+                CryptoPsbt::from_ur_string(frame).map_err_str(QrTransportError::Ur)?;
+
+            return Ok(QrScanProgress::Complete {
+                transport: QrTransport::Ur,
+                psbt: crypto_psbt.psbt().clone(),
+            });
+        }
+
         let ScannerMode::Ur { decoder, seen } = &mut self.mode else {
             return Err(QrTransportError::MixedTransports);
         };
 
-        if seen.insert(frame.to_owned()) {
+        if !seen.contains(frame) {
             decoder.receive(ur).map_err_str(QrTransportError::Ur)?;
+            seen.insert(frame.to_owned());
         }
 
         if decoder.is_complete() {
@@ -283,6 +306,7 @@ impl QrScanner {
                 .ok_or_else(|| {
                     QrTransportError::Ur("complete decoder has no message".to_owned())
                 })?;
+
             let crypto_psbt = CryptoPsbt::from_cbor(message).map_err_str(QrTransportError::Ur)?;
 
             return Ok(QrScanProgress::Complete {
@@ -344,7 +368,7 @@ fn encode_ur(psbt: &Psbt, density: QrDensity) -> Result<Vec<String>, QrTransport
     ))
 }
 
-fn encode_ur_data(ur_type: &str, cbor: &[u8], fragment_len: usize) -> Vec<String> {
+pub(crate) fn encode_ur_data(ur_type: &str, cbor: &[u8], fragment_len: usize) -> Vec<String> {
     let mut encoder = UrEncoder::new();
     encoder.start(ur_type, cbor, fragment_len);
     let frame_count = encoder.sequence_count() as usize;
@@ -410,6 +434,7 @@ mod tests {
             let expected = empty_psbt();
             let frames = QrFrames::from_psbt(&expected, transport, QrDensity::default())
                 .expect("empty PSBT encodes for every supported transport");
+
             let mut scanner = QrScanner::new();
             let mut complete = None;
 

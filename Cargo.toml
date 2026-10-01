@@ -25,8 +25,7 @@ color-eyre = "0.6.5"
 directories = "6.0.0"
 foundation-ur = { version = "0.4.0", default-features = false, features = ["std"] }
 flume = "0.12.0"
-gpui = "0.2.2"
-gpui-component = "0.5.1"
+gpui-kit = "=0.7.0"
 jiff = { version = "0.2.35", features = ["serde"] }
 keyring = "4.1.6"
 minicbor = { version = "2.3.0", features = ["alloc", "std"] }

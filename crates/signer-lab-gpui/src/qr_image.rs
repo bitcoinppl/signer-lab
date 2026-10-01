@@ -1,6 +1,6 @@
 use std::{fmt::Write as _, sync::Arc};
 
-use gpui::{Image, ImageFormat};
+use gpui_kit::{Image, ImageFormat};
 use rxing::{BarcodeFormat, Writer as _, qrcode::QRCodeWriter};
 
 pub(crate) fn render(frame: &str, side: u32) -> Result<Arc<Image>, String> {
@@ -41,6 +41,7 @@ fn matrix_svg(matrix: &rxing::common::BitMatrix, side: u32) -> Result<Vec<u8>, S
             }
         }
     }
+
     svg.push_str("</svg>");
 
     Ok(svg.into_bytes())
@@ -48,4 +49,26 @@ fn matrix_svg(matrix: &rxing::common::BitMatrix, side: u32) -> Result<Vec<u8>, S
 
 fn error_message(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{DevicePixels, TestAppContext, size};
+
+    use super::render;
+
+    #[gpui_kit::test]
+    fn qr_image_decodes_with_the_smooth_svg_scale(cx: &mut TestAppContext) {
+        let image = render("signer-lab image transport", 260).expect("QR image renders");
+        let decoded = cx
+            .update(|cx| image.to_image_data(cx.svg_renderer()))
+            .expect("GPUI decodes the QR SVG");
+
+        // GPUI rasterizes SVGs at twice their logical size for smooth edges
+        assert_eq!(decoded.size(0), size(DevicePixels(520), DevicePixels(520)));
+        let pixels = decoded.as_bytes(0).expect("decoded QR has pixels");
+        let pixels = pixels.as_chunks::<4>().0;
+        assert!(pixels.contains(&[0, 0, 0, 255]));
+        assert!(pixels.contains(&[255; 4]));
+    }
 }

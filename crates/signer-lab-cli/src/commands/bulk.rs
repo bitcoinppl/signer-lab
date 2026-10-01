@@ -1,19 +1,21 @@
 use std::str::FromStr as _;
 
-use bitcoin::{Amount, ScriptBuf, bip32::Xpub};
-use color_eyre::eyre::{Result, eyre};
+use bitcoin::{Amount, bip32::Xpub};
+use color_eyre::eyre::Result;
 use signer_lab_core::{
-    AddressType, BulkPlanner, BulkRequest, Destination, DestinationScripts, ExternalDescriptor,
-    FixedAddress, LabNetwork, SignerId,
+    BulkDestinationSpec, BulkShape, ExternalDescriptor, FixedAddress, InputReservation, LabNetwork,
+    OutputCount, PlanBulk,
 };
 
 use super::{
-    output::{BulkCancellationOutput, BulkExecutionOutput, BulkOperationOutput, BulkPlanOutput},
+    output::{
+        BulkCancellationOutput, BulkDismissalOutput, BulkExecutionOutput, BulkOperationOutput,
+        BulkPlanOutput,
+    },
     support,
 };
 use crate::cli::{
-    BulkCommand, BulkPlanCommand, ConsolidationPlanArgs, DestinationCommand, TransferPlanArgs,
-    WalletSelection,
+    BulkCommand, BulkPlanCommand, ConsolidationPlanArgs, DestinationCommand, WalletSelection,
 };
 
 pub(super) async fn run(repository: &mut support::Repository, command: BulkCommand) -> Result<()> {
@@ -47,6 +49,18 @@ pub(super) async fn run(repository: &mut support::Repository, command: BulkComma
                 txids: report.txids,
             })
         }
+        BulkCommand::Dismiss {
+            signer: selection,
+            operation,
+        } => {
+            repository
+                .acknowledge_failed_bulk_operation(selection.signer, operation)
+                .await?;
+
+            support::print_json(&BulkDismissalOutput {
+                acknowledged_operation_id: operation,
+            })
+        }
         BulkCommand::Cancel {
             wallet: selection,
             operation,
@@ -71,115 +85,79 @@ async fn plan(
 ) -> Result<()> {
     let signer = support::find_signer(repository, selection.signer.signer).await?;
     let network = selection.network.into();
-    repository
-        .reconcile_bulk_reservations(&signer, network)
-        .await?;
-    let request = match kind {
-        BulkPlanCommand::FanOut(args) => {
-            let (amount, destinations) = transfer_destinations(repository, network, args).await?;
-            BulkRequest::fan_out(amount, destinations)?
-        }
-        BulkPlanCommand::Batch(args) => {
-            let (amount, destinations) = transfer_destinations(repository, network, args).await?;
-            BulkRequest::batch(amount, destinations)?
-        }
+    let (shape, destination) = match kind {
+        BulkPlanCommand::FanOut(args) => (
+            BulkShape::fan_out(
+                OutputCount::try_from(args.count)?,
+                Amount::from_sat(args.amount),
+            )?,
+            args.destination,
+        ),
+        BulkPlanCommand::Batch(args) => (
+            BulkShape::batch(
+                OutputCount::try_from(args.count)?,
+                Amount::from_sat(args.amount),
+            )?,
+            args.destination,
+        ),
         BulkPlanCommand::Consolidate(ConsolidationPlanArgs { destination }) => {
-            let script = destination_scripts(repository, network, destination, 1)
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| eyre!("consolidation destination did not produce a script"))?;
-            BulkRequest::consolidate_all(script)
+            (BulkShape::consolidate(), destination)
         }
     };
-    let operation_kind = request.kind();
-    let mut wallet = repository.open_wallet(&signer, network)?;
-    let plan =
-        BulkPlanner::new(wallet.account_mut(AddressType::NativeSegwit)).plan(&request, fee_rate)?;
-    let operation = repository
-        .prepare_bulk_operation(signer.id, network, &plan)
+
+    let destination = destination_spec(destination, network)?;
+    let result = repository
+        .plan_bulk_operation(PlanBulk {
+            signer,
+            network,
+            shape,
+            destination,
+            fee_rate,
+        })
         .await?;
-    let reservation_error = plan
-        .reserve_inputs(wallet.account_mut(AddressType::NativeSegwit))
-        .err()
-        .map(|error| error.to_string());
+
+    let reservation_error = match result.reservation {
+        InputReservation::Held => None,
+        InputReservation::Failed(error) => Some(error),
+    };
 
     support::print_json(&BulkPlanOutput {
-        operation_id: operation.lifecycle.id,
-        kind: operation_kind,
+        operation_id: result.operation_id,
+        kind: result.plan.kind(),
         network,
-        plan,
+        plan: result.plan,
         reservation_error,
+        destination_range: result.destination_range,
     })
 }
 
-async fn transfer_destinations(
-    repository: &mut support::Repository,
-    network: LabNetwork,
-    args: TransferPlanArgs,
-) -> Result<(Amount, DestinationScripts)> {
-    let scripts = destination_scripts(repository, network, args.destination, args.count).await?;
-    let destinations = DestinationScripts::new(scripts)?;
-
-    Ok((Amount::from_sat(args.amount), destinations))
-}
-
-async fn destination_scripts(
-    repository: &mut support::Repository,
-    network: LabNetwork,
+fn destination_spec(
     destination: DestinationCommand,
-    count: usize,
-) -> Result<Vec<ScriptBuf>> {
-    match destination {
+    network: LabNetwork,
+) -> Result<BulkDestinationSpec> {
+    Ok(match destination {
         DestinationCommand::Address { value } => {
-            let address = FixedAddress::parse(&value, network)?;
-
-            Ok(Destination::Fixed(address).derive_scripts(network, 0, count)?)
+            BulkDestinationSpec::Fixed(FixedAddress::parse(&value, network)?)
         }
         DestinationCommand::Xpub {
             value,
             address_type,
-        } => {
-            let xpub = Xpub::from_str(&value)?;
-            let destination = Destination::AccountXpub {
-                xpub,
-                address_type: address_type.into(),
-            };
-
-            Ok(destination.derive_scripts(network, 0, count)?)
-        }
-        DestinationCommand::Descriptor { value } => {
-            let descriptor = ExternalDescriptor::parse(&value, network)?;
-
-            Ok(Destination::Descriptor(descriptor).derive_scripts(network, 0, count)?)
-        }
+            start_index,
+        } => BulkDestinationSpec::AccountXpub {
+            xpub: Xpub::from_str(&value)?,
+            address_type: address_type.into(),
+            start_index,
+        },
+        DestinationCommand::Descriptor { value, start_index } => BulkDestinationSpec::Descriptor {
+            descriptor: ExternalDescriptor::parse(&value, network)?,
+            start_index,
+        },
         DestinationCommand::Signer {
             signer,
             address_type,
-        } => {
-            signer_destination_scripts(repository, network, signer, address_type.into(), count)
-                .await
-        }
-    }
-}
-
-async fn signer_destination_scripts(
-    repository: &mut support::Repository,
-    network: LabNetwork,
-    signer_id: SignerId,
-    address_type: AddressType,
-    count: usize,
-) -> Result<Vec<ScriptBuf>> {
-    let signer = support::find_signer(repository, signer_id).await?;
-    let mut wallet = repository.open_wallet(&signer, network)?;
-    let account = wallet.account_mut(address_type);
-    let mut scripts = Vec::with_capacity(count);
-
-    for _ in 0..count {
-        let address = account.reveal_receive_address()?;
-        let address = FixedAddress::parse(&address, network)?;
-        scripts.extend(Destination::Fixed(address).derive_scripts(network, 0, 1)?);
-    }
-
-    Ok(scripts)
+        } => BulkDestinationSpec::SavedSigner {
+            signer_id: signer,
+            address_type: address_type.into(),
+        },
+    })
 }

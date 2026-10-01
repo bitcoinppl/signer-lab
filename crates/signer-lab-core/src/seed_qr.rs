@@ -54,6 +54,7 @@ impl StandardSeedQr {
             .map(|index| Language::English.word_list()[usize::from(index)])
             .collect::<Vec<_>>()
             .join(" ");
+
         let secret = MnemonicSecret::parse(&words).map_err(SeedQrError::InvalidSecret)?;
 
         Ok(Self(secret))
@@ -85,6 +86,7 @@ impl StandardSeedQr {
                 .iter()
                 .position(|candidate| *candidate == word)
                 .ok_or_else(|| SeedQrError::UnknownWord(word.to_owned()))?;
+
             for divisor in [1000, 100, 10, 1] {
                 text.push(DECIMAL_DIGITS[(index / divisor) % 10]);
             }
@@ -118,6 +120,7 @@ impl CompactSeedQr {
     pub fn parse(entropy: &[u8]) -> Result<Self, SeedQrError> {
         let mnemonic = Mnemonic::from_entropy_in(Language::English, entropy)
             .map_err(SeedQrError::InvalidMnemonic)?;
+
         let secret =
             MnemonicSecret::parse(&mnemonic.to_string()).map_err(SeedQrError::InvalidSecret)?;
 
@@ -177,12 +180,15 @@ fn word_indexes(value: &str) -> Result<Vec<u16>, SeedQrError> {
 
     value
         .as_bytes()
-        .chunks_exact(INDEX_DIGITS)
+        .as_chunks::<INDEX_DIGITS>()
+        .0
+        .iter()
         .map(|digits| {
             let index = u16::from(digits[0] - b'0') * 1000
                 + u16::from(digits[1] - b'0') * 100
                 + u16::from(digits[2] - b'0') * 10
                 + u16::from(digits[3] - b'0');
+
             if index > MAX_WORD_INDEX {
                 return Err(SeedQrError::IndexOutOfBounds(index));
             }
@@ -239,10 +245,12 @@ mod tests {
             standard.numeric_text().expect("standard text").as_str(),
             STANDARD
         );
+
         assert_eq!(
             compact.entropy().expect("compact entropy").as_slice(),
             COMPACT
         );
+
         assert_eq!(standard.into_secret().expose_phrase(), WORDS);
         assert_eq!(compact.into_secret().expose_phrase(), WORDS);
     }
@@ -264,6 +272,7 @@ mod tests {
             StandardSeedQr::parse("0000not-digits"),
             Err(SeedQrError::NonNumeric)
         ));
+
         assert!(matches!(
             StandardSeedQr::parse(&"2048".repeat(12)),
             Err(SeedQrError::IndexOutOfBounds(2048))

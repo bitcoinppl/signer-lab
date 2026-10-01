@@ -11,11 +11,20 @@ publish = false
 name = "signer-lab"
 path = "src/main.rs"
 
+[features]
+test-support = ["gpui-kit/test-support"]
+
+[[test]]
+name = "screenshots"
+path = "tests/screenshots.rs"
+harness = false
+test = false
+required-features = ["test-support"]
+
 [dependencies]
 color-eyre.workspace = true
 directories.workspace = true
-gpui.workspace = true
-gpui-component.workspace = true
+gpui-kit.workspace = true
 bitcoin.workspace = true
 nokhwa.workspace = true
 rxing.workspace = true
@@ -26,7 +35,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
 
 [package.metadata.bundle]
 name = "Signer Lab"

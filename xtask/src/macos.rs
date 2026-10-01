@@ -1,5 +1,7 @@
 use std::{
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
     process::{self, Command},
 };
@@ -103,10 +105,12 @@ fn create_bundle(repository: &Path, bundle: &Path) -> Result<()> {
 
     fs::create_dir_all(&executables)
         .wrap_err_with(|| format!("create {}", executables.display()))?;
+
     fs::create_dir_all(&resources).wrap_err_with(|| format!("create {}", resources.display()))?;
 
     copy(
-        &repository.join("target/release").join(BINARY_NAME),
+        &release_directory(repository, env::var_os("CARGO_TARGET_DIR").as_deref())
+            .join(BINARY_NAME),
         &executables.join(BINARY_NAME),
     )?;
     copy(
@@ -117,6 +121,12 @@ fn create_bundle(repository: &Path, bundle: &Path) -> Result<()> {
         .wrap_err("write the application Info.plist")?;
 
     Ok(())
+}
+
+fn release_directory(repository: &Path, target_override: Option<&OsStr>) -> PathBuf {
+    let target = target_override.map_or_else(|| repository.join("target"), PathBuf::from);
+
+    repository.join(target).join("release")
 }
 
 fn copy(source: &Path, destination: &Path) -> Result<()> {
@@ -147,6 +157,7 @@ fn signing_identity() -> Result<SigningIdentity> {
         let identity = identity
             .into_string()
             .map_err(|_| eyre!("{CODESIGN_IDENTITY_ENV} is not valid Unicode"))?;
+
         let identity = identity.trim();
         if identity.is_empty() {
             bail!("{CODESIGN_IDENTITY_ENV} must not be empty");
@@ -163,6 +174,7 @@ fn signing_identity() -> Result<SigningIdentity> {
         .args(["find-identity", "-v", "-p", "codesigning"])
         .output()
         .wrap_err("list macOS code-signing identities")?;
+
     if output.status.success()
         && let Some(identity) = apple_development_identity(&String::from_utf8_lossy(&output.stdout))
     {
@@ -201,6 +213,7 @@ fn install_bundle(destination: BundleDestination, staged_bundle: &Path) -> Resul
     let had_installed_bundle = installation_path
         .try_exists()
         .wrap_err("check for an existing installed application bundle")?;
+
     if had_installed_bundle {
         fs::rename(&installation_path, &backup_path)
             .wrap_err_with(|| format!("move the existing bundle to {}", backup_path.display()))?;
@@ -228,6 +241,7 @@ fn temporary_sibling(bundle: &Path, purpose: &str) -> Result<PathBuf> {
     let parent = bundle
         .parent()
         .ok_or_else(|| eyre!("bundle path has no parent: {}", bundle.display()))?;
+
     let temporary_name = format!(".{APP_NAME}.{purpose}-{}", process::id());
 
     Ok(parent.join(temporary_name))
@@ -282,7 +296,29 @@ fn info_plist() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::apple_development_identity;
+    use std::{ffi::OsStr, path::Path};
+
+    use super::{apple_development_identity, release_directory};
+
+    #[test]
+    fn bundle_uses_the_configured_target_directory() {
+        let repository = Path::new("/workspace/signer-lab");
+
+        assert_eq!(
+            release_directory(repository, None),
+            repository.join("target/release")
+        );
+
+        assert_eq!(
+            release_directory(repository, Some(OsStr::new("target/agent-core"))),
+            repository.join("target/agent-core/release")
+        );
+
+        assert_eq!(
+            release_directory(repository, Some(OsStr::new("/build/target"))),
+            Path::new("/build/target/release")
+        );
+    }
 
     #[test]
     fn development_identity_is_preferred_over_distribution_identities() {

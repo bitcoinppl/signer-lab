@@ -16,6 +16,7 @@ pub(super) async fn open_repository(override_path: Option<PathBuf>) -> Result<Re
     let data_dir = data_dir(override_path)?;
     std::fs::create_dir_all(&data_dir)
         .wrap_err_with(|| format!("cannot create data directory {}", data_dir.display()))?;
+
     let store = LabStore::open_or_create(data_dir.join("metadata.db")).await?;
 
     Ok(SignerRepository::new(
@@ -46,6 +47,7 @@ pub(super) async fn open_wallet(
     repository
         .reconcile_bulk_reservations(&signer, network)
         .await?;
+
     let wallet = repository.open_wallet(&signer, network)?;
 
     Ok((signer, wallet))
@@ -71,11 +73,7 @@ pub(super) fn print_json(value: &impl Serialize) -> Result<()> {
 }
 
 pub(super) const fn address_types() -> [AddressType; 3] {
-    [
-        AddressType::Legacy,
-        AddressType::WrappedSegwit,
-        AddressType::NativeSegwit,
-    ]
+    AddressType::ALL
 }
 
 impl From<NetworkArg> for LabNetwork {

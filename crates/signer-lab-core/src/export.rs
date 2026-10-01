@@ -2,7 +2,6 @@ use bbqr::file_type::FileType;
 use bitcoin::bip32::DerivationPath;
 use cove_ur::{CryptoCoinInfo, CryptoHdkey, CryptoKeypath};
 use cove_util::ResultExt as _;
-use foundation_ur::Encoder as UrEncoder;
 use minicbor::{Encoder as CborEncoder, data::Tag};
 use pubport::{
     Format,
@@ -11,7 +10,10 @@ use pubport::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{AccountPublicData, AddressType, LabNetwork, QrDensity, QrFrames, QrTransportError};
+use crate::qr::encode_ur_data;
+use crate::{
+    AccountPublicData, AddressType, LabNetwork, QrDensity, QrFrames, QrTransport, QrTransportError,
+};
 
 /// A wallet-export format supported by Cove's import paths
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,14 +78,14 @@ impl ExportArtifact {
     /// Returns an error when BBQR framing fails
     pub fn qr_frames(
         &self,
-        transport: crate::QrTransport,
+        transport: QrTransport,
         density: QrDensity,
     ) -> Result<QrFrames, QrTransportError> {
         match (&self.payload, transport) {
-            (ExportPayload::Text(text), crate::QrTransport::Bbqr) => {
+            (ExportPayload::Text(text), QrTransport::Bbqr) => {
                 QrFrames::from_bbqr_data(text.as_bytes(), self.bbqr_file_type(), density)
             }
-            (ExportPayload::Text(text), crate::QrTransport::Ur) => {
+            (ExportPayload::Text(text), QrTransport::Ur) => {
                 let mut cbor = Vec::new();
                 minicbor::Encoder::new(&mut cbor)
                     .bytes(text.as_bytes())
@@ -91,10 +93,10 @@ impl ExportArtifact {
 
                 Ok(QrFrames::from_ur_data("bytes", &cbor, density))
             }
-            (ExportPayload::Ur { cbor, .. }, crate::QrTransport::Bbqr) => {
+            (ExportPayload::Ur { cbor, .. }, QrTransport::Bbqr) => {
                 QrFrames::from_bbqr_data(cbor, FileType::Cbor, density)
             }
-            (ExportPayload::Ur { ur_type, cbor, .. }, crate::QrTransport::Ur) => {
+            (ExportPayload::Ur { ur_type, cbor, .. }, QrTransport::Ur) => {
                 Ok(QrFrames::from_ur_data(ur_type, cbor, density))
             }
         }
@@ -131,11 +133,7 @@ impl<'a> WalletExporter<'a> {
         accounts: &'a [AccountPublicData],
     ) -> Result<Self, ExportError> {
         let first = accounts.first().ok_or(ExportError::NoAccounts)?;
-        let required = [
-            AddressType::Legacy,
-            AddressType::WrappedSegwit,
-            AddressType::NativeSegwit,
-        ];
+        let required = AddressType::ALL;
 
         for address_type in required {
             let account = account(accounts, address_type)?;
@@ -182,6 +180,7 @@ impl<'a> WalletExporter<'a> {
             bip84: Some(native),
             bip86: None,
         };
+
         let text = serde_json::to_string_pretty(&json).map_err(ExportError::Json)?;
 
         validated_text(
@@ -235,6 +234,7 @@ impl<'a> WalletExporter<'a> {
         };
         pubport::descriptor::Descriptors::try_from(json.clone())
             .map_err_str(ExportError::Pubport)?;
+
         let text = serde_json::to_string_pretty(&json).map_err(ExportError::Json)?;
 
         validated_text(
@@ -251,6 +251,7 @@ impl<'a> WalletExporter<'a> {
             master_fingerprint: account.master_fingerprint.to_string(),
             ext_pub_key: account.account_xpub.to_string(),
         };
+
         let text = serde_json::to_string_pretty(&json).map_err(ExportError::Json)?;
 
         validated_text(ExportKind::WasabiJson, "wasabi.json", text)
@@ -286,7 +287,7 @@ impl<'a> WalletExporter<'a> {
     fn jade_crypto_hdkey(&self, address_type: AddressType) -> Result<ExportArtifact, ExportError> {
         let account = account(self.accounts, address_type)?;
         let cbor = hdkey(account)?.to_cbor().map_err_str(ExportError::Ur)?;
-        let frames = ur_frames("crypto-hdkey", &cbor, 200);
+        let frames = encode_ur_data("crypto-hdkey", &cbor, 200);
 
         Ok(ExportArtifact {
             kind: ExportKind::JadeCryptoHdkey(address_type),
@@ -303,7 +304,7 @@ impl<'a> WalletExporter<'a> {
     fn jade_crypto_account(&self) -> Result<ExportArtifact, ExportError> {
         let first = self.accounts.first().ok_or(ExportError::NoAccounts)?;
         let cbor = self.crypto_account_cbor(first.master_fingerprint.to_bytes())?;
-        let frames = ur_frames("crypto-account", &cbor, 200);
+        let frames = encode_ur_data("crypto-account", &cbor, 200);
 
         Ok(ExportArtifact {
             kind: ExportKind::JadeCryptoAccount,
@@ -337,16 +338,20 @@ impl<'a> WalletExporter<'a> {
             encoder
                 .tag(Tag::new(cove_ur::registry::CRYPTO_ACCOUNT))
                 .map_err(|error| cbor_error(&error))?;
+
             encoder.map(2).map_err(|error| cbor_error(&error))?;
             encoder
                 .u32(cove_ur::registry::account_keys::MASTER_FINGERPRINT)
                 .map_err(|error| cbor_error(&error))?;
+
             encoder
                 .u32(u32::from_be_bytes(fingerprint))
                 .map_err(|error| cbor_error(&error))?;
+
             encoder
                 .u32(cove_ur::registry::account_keys::OUTPUT_DESCRIPTORS)
                 .map_err(|error| cbor_error(&error))?;
+
             encoder
                 .array(self.accounts.len() as u64)
                 .map_err(|error| cbor_error(&error))?;
@@ -358,6 +363,7 @@ impl<'a> WalletExporter<'a> {
                 encoder
                     .tag(Tag::new(cove_ur::registry::CRYPTO_OUTPUT))
                     .map_err(|error| cbor_error(&error))?;
+
                 for &tag in script_tags(account.address_type) {
                     encoder
                         .tag(Tag::new(tag))
@@ -398,6 +404,7 @@ fn hdkey(account: &AccountPublicData) -> Result<CryptoHdkey, ExportError> {
         "Signer Lab {}",
         address_type_slug(account.address_type)
     ));
+
     hdkey.source = Some("Signer Lab".to_owned());
 
     Ok(hdkey)
@@ -420,16 +427,6 @@ fn validated_text(
         },
         payload: ExportPayload::Text(text),
     })
-}
-
-fn ur_frames(ur_type: &str, cbor: &[u8], fragment_len: usize) -> Vec<String> {
-    let mut encoder = UrEncoder::new();
-    encoder.start(ur_type, cbor, fragment_len);
-    let frame_count = encoder.sequence_count() as usize;
-
-    (0..frame_count)
-        .map(|_| encoder.next_part().to_string())
-        .collect()
 }
 
 fn script_type(address_type: AddressType) -> ScriptType {
@@ -533,8 +530,10 @@ mod tests {
         let accounts = wallet
             .public_accounts()
             .expect("test wallet exposes public accounts");
+
         let exporter = WalletExporter::new(LabNetwork::MutinyNet, &accounts)
             .expect("test wallet accounts share one fingerprint");
+
         let kinds = [
             ExportKind::ColdcardGenericJson,
             ExportKind::MultipathDescriptor(AddressType::NativeSegwit),
@@ -549,6 +548,7 @@ mod tests {
             let artifact = exporter
                 .export(kind)
                 .unwrap_or_else(|error| panic!("{kind:?} export failed: {error}"));
+
             assert!(matches!(artifact.payload, ExportPayload::Text(_)));
         }
 
@@ -561,6 +561,7 @@ mod tests {
         let accounts = wallet
             .public_accounts()
             .expect("test wallet exposes public accounts");
+
         let exporter = WalletExporter::new(LabNetwork::MutinyNet, &accounts)
             .expect("test wallet accounts share one fingerprint");
 
@@ -572,6 +573,7 @@ mod tests {
             let ExportPayload::Ur { frames, .. } = artifact.payload else {
                 panic!("expected UR frames");
             };
+
             let mut decoder = Decoder::default();
 
             for frame in frames {
@@ -586,6 +588,7 @@ mod tests {
                 .message()
                 .expect("complete decoder returns a message")
                 .expect("complete decoder message is present");
+
             match kind {
                 ExportKind::JadeCryptoAccount => {
                     cove_ur::CryptoAccount::from_cbor(cbor)
@@ -608,6 +611,7 @@ mod tests {
         let accounts = wallet
             .public_accounts()
             .expect("test wallet exposes public accounts");
+
         let exporter = WalletExporter::new(LabNetwork::MutinyNet, &accounts)
             .expect("test wallet accounts share one fingerprint");
 

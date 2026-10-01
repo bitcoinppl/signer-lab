@@ -1,111 +1,72 @@
-use gpui::{Rgba, px, rgb, rgba};
-use gpui_component::Theme;
+use gpui_kit::component::Theme;
+use gpui_kit::{Hsla, px, rgb};
+use signer_lab_core::LabNetwork;
 
-pub(super) const SIDEBAR_WIDTH: f32 = 264.0;
-pub(super) const INSPECTOR_WIDTH: f32 = 360.0;
-pub(super) const WORKSPACE_HEADER_HEIGHT: f32 = 88.0;
-pub(super) const SURFACE_RADIUS: f32 = 14.0;
-pub(super) const SURFACE_INNER_RADIUS: f32 = SURFACE_RADIUS - 1.0;
-pub(super) const CONTENT_RADIUS: f32 = 10.0;
+pub(super) const SIDEBAR_WIDTH: f32 = 232.0;
+pub(super) const TOOLBAR_HEIGHT: f32 = 52.0;
+pub(super) const STATUS_BAR_HEIGHT: f32 = 26.0;
+pub(super) const INSPECTOR_WIDTH: f32 = 340.0;
+pub(super) const CONTENT_PADDING: f32 = 24.0;
 
-const ACCENT_HEX: u32 = 0x00f7_931a;
-const ACCENT_HOVER_HEX: u32 = 0x00e8_850d;
-const ACCENT_ACTIVE_HEX: u32 = 0x00d9_7700;
-const BORDER_HEX: u32 = 0xd5df_e7ff;
-const CANVAS_HEX: u32 = 0xf9fb_fcff;
-const INSPECTOR_HEX: u32 = 0xf2f6_f9ff;
-const MUTED_HEX: u32 = 0x6672_7dff;
-const SIDEBAR_HEX: u32 = 0xeff5_faff;
-const SIDEBAR_BORDER_HEX: u32 = 0xd3df_e8ff;
-const SIDEBAR_HOVER_HEX: u32 = 0xe5ed_f3ff;
-const SIDEBAR_MUTED_HEX: u32 = 0x6b78_84ff;
-const SIDEBAR_SELECTED_HEX: u32 = 0xffff_ffff;
-const SIDEBAR_TEXT_HEX: u32 = 0x2b34_3cff;
-const STATUS_GREEN_HEX: u32 = 0x22c5_5eff;
-const TEXT_HEX: u32 = 0x2027_2eff;
-const TINT_HEX: u32 = 0xfff3_e6ff;
-const TOOLBAR_HEX: u32 = 0xf7fa_fcff;
-const WINDOW_FIELD_HEX: u32 = 0xe7f0_f6ff;
+/// QR codes need a white surface in both appearance modes
+pub(super) const QR_BACKGROUND: Hsla = Hsla::white();
 
-pub(super) fn accent() -> Rgba {
-    rgb(ACCENT_HEX)
+/// Distinguishes the two test networks without changing semantic theme colors
+pub(super) fn network_color(network: LabNetwork) -> Hsla {
+    rgb(match network {
+        LabNetwork::MutinyNet => 0x008b_5cf6,
+        LabNetwork::Testnet4 => 0x0014_b8a6,
+    })
+    .into()
 }
 
-pub(super) fn border() -> Rgba {
-    rgba(BORDER_HEX)
+pub(crate) fn apply_brand(theme: &mut Theme) {
+    theme.primary = rgb(0x00f7_931a).into();
+    theme.primary_hover = rgb(0x00e8_850d).into();
+    theme.primary_active = rgb(0x00d9_7700).into();
+    theme.primary_foreground = Hsla::white();
+    theme.ring = theme.primary;
+    theme.button_primary = theme.primary;
+    theme.button_primary_hover = theme.primary_hover;
+    theme.button_primary_active = theme.primary_active;
+    theme.button_primary_foreground = theme.primary_foreground;
+    theme.list_active = Hsla {
+        a: 0.12,
+        ..theme.primary
+    };
+
+    theme.table_active = theme.list_active;
+    theme.list_active_border = theme.primary;
+    theme.table_active_border = theme.primary;
+    theme.sidebar.a = 0.8;
+    theme.radius = px(6.0);
+    theme.radius_lg = px(8.0);
+    theme.font_size = px(13.0);
+    theme.mono_font_size = px(12.0);
 }
 
-pub(super) fn canvas() -> Rgba {
-    rgba(CANVAS_HEX)
-}
+#[cfg(test)]
+mod tests {
+    use super::apply_brand;
+    use gpui_kit::{
+        TestAppContext, base,
+        component::{Theme, ThemeMode},
+    };
 
-pub(super) fn inspector() -> Rgba {
-    rgba(INSPECTOR_HEX)
-}
-
-pub(super) fn muted() -> Rgba {
-    rgba(MUTED_HEX)
-}
-
-pub(super) fn sidebar() -> Rgba {
-    rgba(SIDEBAR_HEX)
-}
-
-pub(super) fn sidebar_border() -> Rgba {
-    rgba(SIDEBAR_BORDER_HEX)
-}
-
-pub(super) fn sidebar_hover() -> Rgba {
-    rgba(SIDEBAR_HOVER_HEX)
-}
-
-pub(super) fn sidebar_muted() -> Rgba {
-    rgba(SIDEBAR_MUTED_HEX)
-}
-
-pub(super) fn sidebar_selected() -> Rgba {
-    rgba(SIDEBAR_SELECTED_HEX)
-}
-
-pub(super) fn sidebar_text() -> Rgba {
-    rgba(SIDEBAR_TEXT_HEX)
-}
-
-pub(super) fn status_green() -> Rgba {
-    rgba(STATUS_GREEN_HEX)
-}
-
-pub(super) fn text() -> Rgba {
-    rgba(TEXT_HEX)
-}
-
-pub(super) fn tint() -> Rgba {
-    rgba(TINT_HEX)
-}
-
-pub(super) fn toolbar() -> Rgba {
-    rgba(TOOLBAR_HEX)
-}
-
-pub(super) fn window_field() -> Rgba {
-    rgba(WINDOW_FIELD_HEX)
-}
-
-pub(crate) fn apply_theme(theme: &mut Theme) {
-    theme.primary = rgb(ACCENT_HEX).into();
-    theme.primary_hover = rgb(ACCENT_HOVER_HEX).into();
-    theme.primary_active = rgb(ACCENT_ACTIVE_HEX).into();
-    theme.primary_foreground = rgb(0x00ff_ffff).into();
-    theme.background = canvas().into();
-    theme.foreground = text().into();
-    theme.muted_foreground = muted().into();
-    theme.border = border().into();
-    theme.input = rgba(0xb5bd_c666).into();
-    theme.muted = rgba(0xe9ed_f0d9).into();
-    theme.secondary = rgba(0xffff_fff0).into();
-    theme.secondary_hover = rgb(0x00ff_ffff).into();
-    theme.accent = tint().into();
-    theme.radius = px(7.0);
-    theme.radius_lg = px(9.0);
-    theme.shadow = true;
+    #[gpui_kit::test]
+    fn brand_reaches_render_tokens_in_both_modes(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            for mode in [ThemeMode::Light, ThemeMode::Dark] {
+                Theme::change(mode, None, cx);
+                let background = Theme::global(cx).background;
+                Theme::update(cx, apply_brand);
+                let theme = Theme::global(cx);
+                assert_eq!(theme.background, background);
+                assert_eq!(theme.tokens.button_primary.color, theme.primary);
+                assert_eq!(base::Theme::global(cx).tokens.colors.primary, theme.primary);
+                assert!((theme.sidebar.a - 0.8).abs() < f32::EPSILON);
+            }
+        });
+    }
 }
