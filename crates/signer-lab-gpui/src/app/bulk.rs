@@ -1,5 +1,5 @@
 use super::{
-    SignerLabApp, components, error_message, input_with_value,
+    SignerLabApp, components, design, error_message, input_with_value,
     state::{AddressTypeLabels, ResultScope, WorkflowOutput, address_types},
     text_area,
 };
@@ -516,8 +516,7 @@ impl SignerLabApp {
         let transaction = self.bulk_transaction_form(disabled, cx);
         let destination = self.bulk_destination_form(disabled, cx);
         let mut fields = v_flex()
-            .max_w(px(560.0))
-            .p_6()
+            .p(px(design::CONTENT_PADDING))
             .gap_5()
             .child(components::group_box("Transaction").child(transaction))
             .child(components::group_box("Destination").child(destination));

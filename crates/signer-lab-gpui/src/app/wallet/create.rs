@@ -1,4 +1,4 @@
-use crate::app::{SignerLabApp, components, error_message, state::ResultScope};
+use crate::app::{SignerLabApp, components, design, error_message, state::ResultScope};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, StyledExt as _,
@@ -97,63 +97,56 @@ impl SignerLabApp {
                     .on_click(cx.listener(|app, _, window, cx| app.cancel_create(window, cx))),
             );
         }
+
+        let generate = components::group_box("Generate").flex_1().min_w_0().child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Button::new("generate-12")
+                        .primary()
+                        .label("12 words")
+                        .disabled(self.busy())
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.create_signer(12, window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("generate-24")
+                        .outline()
+                        .label("24 words")
+                        .disabled(self.busy())
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.create_signer(24, window, cx);
+                        })),
+                ),
+        );
+
+        let import = components::group_box("Import").flex_1().min_w_0().child(
+            v_flex()
+                .gap_3()
+                .child(
+                    Textarea::new(&self.wallet.import_mnemonic)
+                        .h(px(96.0))
+                        .disabled(self.busy()),
+                )
+                .child(self.wallet_import_actions(cx))
+                .child(self.camera_preview(cx)),
+        );
+
         v_flex()
             .id("create-wallet-page")
             .size_full()
-            .items_center()
-            .justify_start()
+            .p(px(design::CONTENT_PADDING))
+            .gap_5()
             .overflow_y_scrollbar()
+            .child(title)
             .child(
-                v_flex()
-                    .w_full()
-                    .max_w(px(560.0))
-                    .pt(px(48.0))
-                    .gap_5()
-                    .child(title)
-                    .child(
-                        v_form().child(
-                            field()
-                                .label("Name")
-                                .child(Input::new(&self.seed_qr.signer_name).disabled(self.busy())),
-                        ),
-                    )
-                    .child(
-                        components::group_box("Generate").child(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    Button::new("generate-12")
-                                        .primary()
-                                        .label("12 words")
-                                        .disabled(self.busy())
-                                        .on_click(cx.listener(|app, _, window, cx| {
-                                            app.create_signer(12, window, cx);
-                                        })),
-                                )
-                                .child(
-                                    Button::new("generate-24")
-                                        .outline()
-                                        .label("24 words")
-                                        .disabled(self.busy())
-                                        .on_click(cx.listener(|app, _, window, cx| {
-                                            app.create_signer(24, window, cx);
-                                        })),
-                                ),
-                        ),
-                    )
-                    .child(
-                        components::group_box("Import").child(
-                            v_flex()
-                                .gap_3()
-                                .child(
-                                    Textarea::new(&self.wallet.import_mnemonic)
-                                        .h(px(96.0))
-                                        .disabled(self.busy()),
-                                )
-                                .child(self.wallet_import_actions(cx))
-                                .child(self.camera_preview(cx)),
-                        ),
-                    ),
+                v_form().child(
+                    field()
+                        .label("Name")
+                        .child(Input::new(&self.seed_qr.signer_name).disabled(self.busy())),
+                ),
             )
+            .child(h_flex().gap_6().items_start().child(generate).child(import))
     }
 }
