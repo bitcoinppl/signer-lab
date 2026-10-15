@@ -627,7 +627,10 @@ mod tests {
                     .expect("export supports the selected QR transport");
 
                 assert_eq!(qr.transport, transport);
-                assert!(!qr.frames.is_empty());
+                assert!(
+                    !qr.frames.is_empty(),
+                    "{kind:?} over {transport:?} produced no QR frames"
+                );
                 if transport == QrTransport::Bbqr {
                     assert!(qr.frames.len() >= 2);
                 }

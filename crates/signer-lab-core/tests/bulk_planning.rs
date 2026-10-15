@@ -344,13 +344,13 @@ async fn external_derivation_ranges_are_checked_before_wallet_changes() {
         }
     }
 
-    assert!(
+    assert_eq!(
         fixture
             .repository
             .bulk_operations(fixture.source.id)
             .await
-            .expect("operations")
-            .is_empty()
+            .expect("operations"),
+        Vec::new()
     );
 }
 
