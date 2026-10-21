@@ -25,8 +25,10 @@ run:
     just bundle
     open -n '_scratch/release/Signer Lab.app'
 
+# Sign the CLI so macOS keeps its Keychain approval across rebuilds
+[positional-arguments]
 cli *args:
-    cargo run -p signer-lab-cli -- {{args}}
+    cargo --locked xtask run-cli -- "$@"
 
 bundle:
     just xtask bundle-macos

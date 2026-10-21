@@ -1,7 +1,8 @@
 use std::{
     env,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{self, Command},
 };
@@ -14,6 +15,9 @@ use color_eyre::{
 
 const APP_NAME: &str = "Signer Lab.app";
 const BINARY_NAME: &str = "signer-lab";
+const BUNDLE_IDENTIFIER: &str = "org.bitcoinppl.signer-lab";
+const CLI_BINARY_NAME: &str = "signer-lab-cli";
+const CLI_IDENTIFIER: &str = "org.bitcoinppl.signer-lab.cli";
 const CODESIGN_IDENTITY_ENV: &str = "SIGNER_LAB_CODESIGN_IDENTITY";
 
 enum SigningIdentity {
@@ -29,10 +33,25 @@ impl SigningIdentity {
         }
     }
 
-    const fn action(&self) -> &'static str {
+    fn action(&self, subject: &str) -> String {
         match self {
-            Self::Certificate(_) => "sign the application bundle",
-            Self::AdHoc => "ad-hoc sign the application bundle",
+            Self::Certificate(_) => format!("sign {subject}"),
+            Self::AdHoc => format!("ad-hoc sign {subject}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Profile {
+    Debug,
+    Release,
+}
+
+impl Profile {
+    const fn directory_name(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Release => "release",
         }
     }
 }
@@ -60,15 +79,45 @@ pub(super) fn bundle(destination: BundleDestination) -> Result<()> {
     let repository = repository_root()?;
     let staging_bundle = BundleDestination::staging_path(&repository);
 
-    build_release(&repository)?;
+    build(&repository, "signer-lab-gpui", Profile::Release)?;
     create_bundle(&repository, &staging_bundle)?;
-    sign_bundle(&staging_bundle)?;
+    sign(
+        &staging_bundle,
+        &signing_identity()?,
+        None,
+        "the application bundle",
+    )?;
 
     let bundle = install_bundle(destination, &staging_bundle)?;
 
     println!("Created {}", bundle.display());
 
     Ok(())
+}
+
+/// Builds, signs, and replaces this process with the debug CLI
+///
+/// Keychain approvals for ad-hoc binaries are tied to one build's code hash, so an
+/// unsigned CLI asks again after every rebuild. A certificate signature with a fixed
+/// identifier keeps one "Always Allow" valid across rebuilds
+pub(super) fn run_cli(args: Vec<OsString>) -> Result<()> {
+    let repository = repository_root()?;
+
+    build(&repository, CLI_BINARY_NAME, Profile::Debug)?;
+
+    let binary = built_binary(&repository, Profile::Debug, CLI_BINARY_NAME);
+
+    sign(
+        &binary,
+        &signing_identity()?,
+        Some(CLI_IDENTIFIER),
+        "the CLI",
+    )?;
+
+    // exec hands standard streams, signals, and the exit status straight to the CLI
+    let error = Command::new(&binary).args(args).exec();
+
+    Err(error).wrap_err_with(|| format!("run {}", binary.display()))
 }
 
 fn repository_root() -> Result<PathBuf> {
@@ -78,16 +127,17 @@ fn repository_root() -> Result<PathBuf> {
         .ok_or_else(|| eyre!("xtask manifest directory has no parent"))
 }
 
-fn build_release(repository: &Path) -> Result<()> {
-    run(
-        Command::new("cargo").current_dir(repository).args([
-            "build",
-            "--release",
-            "-p",
-            "signer-lab-gpui",
-        ]),
-        "build the release application",
-    )
+fn build(repository: &Path, package: &str, profile: Profile) -> Result<()> {
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(repository)
+        .args(["build", "-p", package]);
+
+    if matches!(profile, Profile::Release) {
+        command.arg("--release");
+    }
+
+    run(&mut command, &format!("build {package}"))
 }
 
 fn create_bundle(repository: &Path, bundle: &Path) -> Result<()> {
@@ -109,8 +159,7 @@ fn create_bundle(repository: &Path, bundle: &Path) -> Result<()> {
     fs::create_dir_all(&resources).wrap_err_with(|| format!("create {}", resources.display()))?;
 
     copy(
-        &release_directory(repository, env::var_os("CARGO_TARGET_DIR").as_deref())
-            .join(BINARY_NAME),
+        &built_binary(repository, Profile::Release, BINARY_NAME),
         &executables.join(BINARY_NAME),
     )?;
     copy(
@@ -123,10 +172,23 @@ fn create_bundle(repository: &Path, bundle: &Path) -> Result<()> {
     Ok(())
 }
 
-fn release_directory(repository: &Path, target_override: Option<&OsStr>) -> PathBuf {
+fn built_binary(repository: &Path, profile: Profile, name: &str) -> PathBuf {
+    profile_directory(
+        repository,
+        env::var_os("CARGO_TARGET_DIR").as_deref(),
+        profile,
+    )
+    .join(name)
+}
+
+fn profile_directory(
+    repository: &Path,
+    target_override: Option<&OsStr>,
+    profile: Profile,
+) -> PathBuf {
     let target = target_override.map_or_else(|| repository.join("target"), PathBuf::from);
 
-    repository.join(target).join("release")
+    repository.join(target).join(profile.directory_name())
 }
 
 fn copy(source: &Path, destination: &Path) -> Result<()> {
@@ -136,20 +198,27 @@ fn copy(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn sign_bundle(bundle: &Path) -> Result<()> {
-    let identity = signing_identity()?;
+fn sign(
+    path: &Path,
+    identity: &SigningIdentity,
+    identifier: Option<&str>,
+    subject: &str,
+) -> Result<()> {
+    let mut command = Command::new("codesign");
+    command.args([
+        "--force",
+        "--sign",
+        identity.codesign_value(),
+        "--timestamp=none",
+    ]);
 
-    run(
-        Command::new("codesign")
-            .args([
-                "--force",
-                "--sign",
-                identity.codesign_value(),
-                "--timestamp=none",
-            ])
-            .arg(bundle),
-        identity.action(),
-    )
+    // bundles take their identifier from Info.plist, bare binaries need one so the
+    // designated requirement does not depend on the linker's per-build name
+    if let Some(identifier) = identifier {
+        command.args(["--identifier", identifier]);
+    }
+
+    run(command.arg(path), &identity.action(subject))
 }
 
 fn signing_identity() -> Result<SigningIdentity> {
@@ -182,7 +251,7 @@ fn signing_identity() -> Result<SigningIdentity> {
     }
 
     eprintln!(
-        "No Apple Development signing identity was found. The ad-hoc bundle can cause macOS to ask for Keychain access again after a rebuild."
+        "No Apple Development signing identity was found. Ad-hoc signatures can cause macOS to ask for Keychain access again after each rebuild."
     );
     Ok(SigningIdentity::AdHoc)
 }
@@ -272,7 +341,7 @@ fn info_plist() -> String {
     <key>CFBundleIconFile</key>
     <string>SignerLab.icns</string>
     <key>CFBundleIdentifier</key>
-    <string>org.bitcoinppl.signer-lab</string>
+    <string>{BUNDLE_IDENTIFIER}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -298,24 +367,32 @@ fn info_plist() -> String {
 mod tests {
     use std::{ffi::OsStr, path::Path};
 
-    use super::{apple_development_identity, release_directory};
+    use super::{Profile, apple_development_identity, profile_directory};
 
     #[test]
-    fn bundle_uses_the_configured_target_directory() {
+    fn builds_use_the_configured_target_directory() {
         let repository = Path::new("/workspace/signer-lab");
 
         assert_eq!(
-            release_directory(repository, None),
+            profile_directory(repository, None, Profile::Release),
             repository.join("target/release")
         );
 
         assert_eq!(
-            release_directory(repository, Some(OsStr::new("target/agent-core"))),
-            repository.join("target/agent-core/release")
+            profile_directory(
+                repository,
+                Some(OsStr::new("target/agent-core")),
+                Profile::Debug
+            ),
+            repository.join("target/agent-core/debug")
         );
 
         assert_eq!(
-            release_directory(repository, Some(OsStr::new("/build/target"))),
+            profile_directory(
+                repository,
+                Some(OsStr::new("/build/target")),
+                Profile::Release
+            ),
             Path::new("/build/target/release")
         );
     }

@@ -60,6 +60,8 @@ The application stores mnemonics in macOS Keychain. It stores Toasty metadata an
 
 The CLI uses the same data directory, Keychain secrets, BDK wallets, exports, signing rules, and recoverable bulk operations as the desktop app. Command results use JSON on standard output. Errors use standard error and a nonzero exit status.
 
+`just cli` builds the debug CLI and signs it with the same identity as the application bundle, so macOS keeps an Always Allow Keychain approval across rebuilds. The CLI has its own identity, so it asks once separately from the app.
+
 ```sh
 # List virtual signers
 just cli signer list
