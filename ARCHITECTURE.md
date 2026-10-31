@@ -22,6 +22,12 @@ The project pins `cove-ur`, `cove-bdk`, `cove-bdk-progressive-scan`, `cove-bip39
 
 `cove-types` is not used because its QR API is coupled to Cove application, Payjoin, database, and UniFFI types. `cove-tokio` is not used because the desktop application owns its Tokio runtime. BDK Esplora owns HTTP transport, so `cove-http` is not used.
 
+## Key Teleport
+
+The `keyteleport` crate implements the COLDCARD protocol and is the same crate Cove uses. Cove's own Key Teleport manager lives in its UniFFI application crate, so Signer Lab does not depend on it.
+
+`signer-lab-core` parses scanned request and response text into typed packets, encrypts a signer's mnemonic for a receiver, and owns the receive session. The receiver's ephemeral private key is saved in an owner-only file under the data directory, because the CLI finishes a receive in a later process and the app can restart while the user works on the other device. Sessions expire after 24 hours. A successful import deletes the session, and a failed import keeps it so the same response can be retried.
+
 ## Network boundary
 
 Version 1 supports only MutinyNet and Testnet4. Both use test-network address encodings. The active network is explicit and is never inferred only from an address string.

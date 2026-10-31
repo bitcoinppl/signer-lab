@@ -26,6 +26,7 @@ color-eyre.workspace = true
 directories.workspace = true
 gpui-kit.workspace = true
 bitcoin.workspace = true
+jiff.workspace = true
 nokhwa.workspace = true
 rxing.workspace = true
 serde_json.workspace = true

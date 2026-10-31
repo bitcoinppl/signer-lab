@@ -12,6 +12,8 @@ pub mod export;
 pub mod fee_rate;
 /// PSBT and wallet-export file formats
 pub mod file;
+/// COLDCARD Key Teleport transfers of recovery words
+pub mod key_teleport;
 /// BIP39 mnemonic generation, parsing, and completion
 pub mod mnemonic;
 /// Recoverable bulk-operation lifecycle types
@@ -47,6 +49,11 @@ pub use fee_rate::{FeeRateError, LabFeeRate};
 pub use file::{
     ArtifactFileError, PsbtDecodeProgress, PsbtFileError, PsbtFileFormat, decode_psbt,
     decode_psbt_text, read_psbt, write_psbt,
+};
+pub use key_teleport::{
+    KeyTeleportError, KeyTeleportPacketKind, KeyTeleportQr, KeyTeleportReceiveRequest,
+    KeyTeleportReceiveSession, KeyTeleportRequest, KeyTeleportResponse, KeyTeleportSessionStore,
+    NumericCode, SentKeyTeleport, TeleportPassword, UnsupportedKeyTeleportPayload,
 };
 pub use mnemonic::{MnemonicError, MnemonicImportError, MnemonicSecret};
 pub use operation::{

@@ -16,7 +16,7 @@ use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::{
     AppContext as _, Bounds, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size,
 };
-use signer_lab_core::{LabStore, SignerRepository};
+use signer_lab_core::{KeyTeleportSessionStore, LabStore, SignerRepository};
 
 use crate::app::{AppRepository, SignerLabApp, design};
 
@@ -48,6 +48,7 @@ pub fn run() -> Result<()> {
 
     let repository: AppRepository = Arc::new(tokio::sync::Mutex::new(repository));
     let signers = runtime.block_on(async { repository.lock().await.signers().await })?;
+    let teleport_sessions = KeyTeleportSessionStore::new(data_dir);
     let runtime_handle = runtime.handle().clone();
     let startup_error = Arc::new(Mutex::new(None));
     let startup_error_writer = Arc::clone(&startup_error);
@@ -60,6 +61,7 @@ pub fn run() -> Result<()> {
             let bounds = Bounds::centered(None, size(px(1280.0), px(820.0)), cx);
             let repository = Arc::clone(&repository);
             let runtime_handle = runtime_handle.clone();
+            let teleport_sessions = teleport_sessions.clone();
             if let Err(error) = gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -77,7 +79,16 @@ pub fn run() -> Result<()> {
                     Theme::sync_system_appearance(Some(window), cx);
                     Theme::update(cx, design::apply_brand);
                     cx.activate(false);
-                    cx.new(|cx| SignerLabApp::new(repository, runtime_handle, signers, window, cx))
+                    cx.new(|cx| {
+                        SignerLabApp::new(
+                            repository,
+                            runtime_handle,
+                            signers,
+                            teleport_sessions,
+                            window,
+                            cx,
+                        )
+                    })
                 },
             ) {
                 if let Ok(mut startup_error) = startup_error_writer.lock() {

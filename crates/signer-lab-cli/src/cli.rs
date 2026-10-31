@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use signer_lab_core::{DestinationScripts, LabFeeRate, OperationId, SignerId};
+use signer_lab_core::{
+    DestinationScripts, KeyTeleportRequest, KeyTeleportResponse, LabFeeRate, NumericCode,
+    OperationId, SignerId, TeleportPassword,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -40,6 +43,54 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: BulkCommand,
     },
+    /// Send or receive recovery words with COLDCARD Key Teleport
+    KeyTeleport {
+        #[command(subcommand)]
+        command: KeyTeleportCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum KeyTeleportCommand {
+    /// Encrypt a signer's recovery words for a receiver request
+    Send {
+        #[arg(long)]
+        signer: SignerId,
+        /// Receiver QR text or keyteleport.com link
+        #[arg(long, value_name = "TEXT")]
+        request: KeyTeleportRequest,
+        /// Eight-digit code shown by the receiver
+        #[arg(long)]
+        code: NumericCode,
+    },
+    /// Receive recovery words from another device as a new signer
+    Receive {
+        #[command(subcommand)]
+        command: KeyTeleportReceiveCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum KeyTeleportReceiveCommand {
+    /// Start a receive session, replacing any earlier one, and print its request
+    Start,
+    /// Print the request of the active receive session
+    Show,
+    /// Decrypt a sender response and import its recovery words
+    Finish {
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value_t = 0)]
+        account_index: u32,
+        /// Sender QR text or keyteleport.com link
+        #[arg(long, value_name = "TEXT")]
+        response: KeyTeleportResponse,
+        /// Teleport password shown by the sender
+        #[arg(long)]
+        password: TeleportPassword,
+    },
+    /// Delete the active receive session
+    Cancel,
 }
 
 #[derive(Debug, Subcommand)]

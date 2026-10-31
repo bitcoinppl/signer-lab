@@ -183,6 +183,7 @@ impl SignerLabApp {
             Page::Wallet => Some(self.wallet_toolbar_actions(cx).into_any_element()),
             Page::SeedQr | Page::Export | Page::Bulk => None,
             Page::Sign => Some(self.sign_toolbar_actions(cx).into_any_element()),
+            Page::KeyTeleport => Some(self.teleport_toolbar_actions(cx).into_any_element()),
         };
         // the style override removes TitleBar's macOS inset because traffic lights belong to the sidebar
         div()
@@ -290,5 +291,6 @@ const fn page_icon(page: Page) -> IconName {
         Page::Export => IconName::FileOutput,
         Page::Sign => IconName::PenLine,
         Page::Bulk => IconName::Layers,
+        Page::KeyTeleport => IconName::ArrowLeftRight,
     }
 }

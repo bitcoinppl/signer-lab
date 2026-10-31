@@ -10,8 +10,8 @@ use gpui_kit::{
     test::TestWindowExt as _,
 };
 use signer_lab_core::{
-    LabNetwork, LabStore, MnemonicSecret, SecretStore, SecretStoreError, SignerId,
-    SignerRepository, VirtualSigner,
+    KeyTeleportSessionStore, LabNetwork, LabStore, MnemonicSecret, SecretStore, SecretStoreError,
+    SignerId, SignerRepository, VirtualSigner,
 };
 use std::{
     collections::HashMap,
@@ -54,6 +54,7 @@ impl SecretStore for MemorySecretStore {
 
 mod bulk;
 mod export;
+mod key_teleport;
 mod seed_qr;
 mod sign;
 mod wallet;
@@ -87,6 +88,7 @@ pub fn screenshot_states() -> Vec<ScreenshotState> {
         export::states(),
         sign::states(),
         bulk::states(),
+        key_teleport::states(),
     ]
     .into_iter()
     .flatten()
@@ -215,6 +217,7 @@ impl ScreenshotFixtures {
         };
 
         let wallet = self.wallet.clone();
+        let teleport_sessions = self.teleport_sessions();
         let setup = state.prepare.map(|prepare| prepare(self)).transpose()?;
         gpui_kit::open_window(
             WindowOptions {
@@ -231,7 +234,14 @@ impl ScreenshotFixtures {
             cx,
             move |window, cx| {
                 cx.new(|cx| {
-                    let mut app = SignerLabApp::new_state(repository, runtime, signers, window, cx);
+                    let mut app = SignerLabApp::new_state(
+                        repository,
+                        runtime,
+                        signers,
+                        teleport_sessions,
+                        window,
+                        cx,
+                    );
                     app.page = state.page;
                     if state.has_wallet {
                         app.wallet.view = Some(wallet);
@@ -249,6 +259,12 @@ impl ScreenshotFixtures {
     }
 }
 
+impl ScreenshotFixtures {
+    fn teleport_sessions(&self) -> KeyTeleportSessionStore {
+        KeyTeleportSessionStore::new(&self.directory)
+    }
+}
+
 impl Drop for ScreenshotFixtures {
     fn drop(&mut self) {
         // windows must close before fixtures drop so all wallet files are no longer in use
@@ -262,7 +278,8 @@ mod tests {
     use crate::app::{
         bulk::BulkWorkflow,
         design,
-        state::{Page, QrPlayback, ResultScope, WorkflowOutput},
+        key_teleport::{TeleportMode, TeleportedQr},
+        state::{Activity, Page, QrPlayback, ResultScope, WorkflowOutput},
         wallet::WalletPane,
     };
     use bitcoin::{
@@ -272,7 +289,9 @@ mod tests {
     use gpui_kit::{
         AppContext as _, Context, TestAppContext, Window, test::TestAppContextExt as _,
     };
-    use signer_lab_core::{AddressType, LabNetwork, PendingPsbt, QrDensity, QrTransport};
+    use signer_lab_core::{
+        AddressType, KeyTeleportQr, LabNetwork, PendingPsbt, QrDensity, QrTransport,
+    };
     use std::{str::FromStr as _, sync::Arc, time::Duration};
     use tokio::sync::{oneshot, watch};
     use tokio_util::sync::CancellationToken;
@@ -286,6 +305,7 @@ mod tests {
             Arc::clone(&fixtures.repository),
             fixtures.runtime.handle().clone(),
             fixtures.signers.clone(),
+            fixtures.teleport_sessions(),
             window,
             cx,
         );
@@ -343,6 +363,42 @@ mod tests {
                 app.cancel_create(window, cx);
                 assert_secret_drafts_empty(app, cx);
                 assert!(matches!(app.wallet.pane, WalletPane::Selected));
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn key_teleport_resumes_saved_receive_and_drops_sent_secrets(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let fixtures = ScreenshotFixtures::new().expect("offline fixture");
+        fixtures
+            .teleport_sessions()
+            .start()
+            .expect("saved receive session");
+        let (view, mut cx) = app_window(&fixtures, cx);
+        cx.update(|window, cx| {
+            view.update(cx, |app, cx| {
+                // a saved session must appear even while other work keeps the app busy
+                app.activity = Activity::Working("Syncing".into());
+                app.key_teleport.mode = TeleportMode::Receive;
+                app.select_page(Page::KeyTeleport, window, cx);
+                assert!(app.key_teleport.receiving.is_some());
+
+                // the CLI shares the session, so returning to the page shows what is on disk
+                app.select_page(Page::Wallet, window, cx);
+                fixtures.teleport_sessions().cancel().expect("cancel");
+                app.select_page(Page::KeyTeleport, window, cx);
+                assert!(app.key_teleport.receiving.is_none());
+
+                app.key_teleport.sent = Some(TeleportedQr::sent(
+                    KeyTeleportQr {
+                        bbqr: "B$2S0100".into(),
+                        url: "https://keyteleport.com/#B$2S0100".into(),
+                    },
+                    "AB CD EF GH".into(),
+                ));
+                app.select_page(Page::Wallet, window, cx);
+                assert!(app.key_teleport.sent.is_none());
             });
         });
     }

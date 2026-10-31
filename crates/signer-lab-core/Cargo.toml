@@ -21,6 +21,7 @@ foundation-ur.workspace = true
 flume.workspace = true
 jiff.workspace = true
 keyring.workspace = true
+keyteleport.workspace = true
 minicbor.workspace = true
 pubport.workspace = true
 rand.workspace = true
