@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
+use jiff::Timestamp;
 use serde::Serialize;
 use serde_json::Value;
 use signer_lab_core::{
-    BulkPlan, ExportKind, LabNetwork, OperationId, OperationLifecycle, PsbtReview, SignReport,
-    SignerId, StoredOperation, VirtualSigner,
+    BulkPlan, ExportKind, KeyTeleportQr, LabNetwork, OperationId, OperationLifecycle, PsbtReview,
+    SignReport, SignerId, StoredOperation, VirtualSigner,
 };
 
 #[derive(Serialize)]
@@ -91,4 +92,23 @@ pub(super) struct BulkPlanOutput {
 #[derive(Debug, Serialize)]
 pub(super) struct BulkDismissalOutput {
     pub(super) acknowledged_operation_id: OperationId,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct KeyTeleportSendOutput {
+    pub(super) signer_id: SignerId,
+    pub(super) response: KeyTeleportQr,
+    pub(super) password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct KeyTeleportRequestOutput {
+    pub(super) request: KeyTeleportQr,
+    pub(super) numeric_code: String,
+    pub(super) expires_at: Timestamp,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct KeyTeleportCancelOutput {
+    pub(super) cancelled: bool,
 }

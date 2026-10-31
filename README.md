@@ -21,6 +21,9 @@ Version 1 supports MutinyNet and Testnet4 only. Do not import a production mnemo
 - Plan, save, sign, and broadcast fan-out, independent batch, and consolidation transactions
 - Derive bulk destinations from an address, XPUB, ranged descriptor, or another saved signer
 - Use exact fee rates from 0.1 sat/vB
+- Send or receive recovery words with COLDCARD Key Teleport, for example to or from Cove
+
+Key Teleport receive sessions are saved in `key-teleport/receive-session.json` in the data directory with owner-only permissions. The app and the CLI share the session, it expires after 24 hours, and it is deleted after a successful import. Only BIP39 recovery words can be received; extended private keys and secure notes are rejected.
 
 Bulk plans are saved before BDK locks their inputs. On startup, Signer Lab restores active locks and releases locks that have no saved operation. A signed plan is saved before relay, so an Esplora policy rejection does not remove the signed PSBT.
 
@@ -93,6 +96,21 @@ just cli psbt sign \
   --input ./unsigned.psbt \
   --output ./signed.ur \
   --format ur
+
+# Key Teleport: encrypt recovery words for a receiver QR and code
+just cli key-teleport send \
+  --signer "$SIGNER_ID" \
+  --request 'B$2R0100…' \
+  --code 12345678
+
+# Key Teleport: show a receiver request, then import the sender's response
+just cli key-teleport receive start
+just cli key-teleport receive finish \
+  --name "Teleported signer" \
+  --response 'B$2S0100…' \
+  --password ABCD2345
 ```
+
+Key Teleport commands accept BBQR text or `keyteleport.com` links. `send` prints the response QR text, its link, and the password the receiver types. `receive start` replaces any earlier session; `receive show` prints the active request again, and `receive cancel` deletes it.
 
 Use `just cli --help` and the nested command help for all wallet and bulk commands. Generated or revealed recovery words are printed only for explicit signer commands. Do not use production recovery words.

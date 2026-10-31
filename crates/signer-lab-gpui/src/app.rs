@@ -10,13 +10,16 @@ use gpui_kit::{
     AppContext as _, ClipboardItem, Context, Entity, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, Window, div,
 };
-use signer_lab_core::{LabNetwork, SignerId, SignerRepository, VirtualSigner};
+use signer_lab_core::{
+    KeyTeleportSessionStore, LabNetwork, SignerId, SignerRepository, VirtualSigner,
+};
 use tokio::{runtime::Handle, sync::Mutex};
 
 mod bulk;
 mod components;
 pub(crate) mod design;
 mod export;
+mod key_teleport;
 mod seed_qr;
 mod shell;
 mod sign;
@@ -28,6 +31,7 @@ pub mod test_support;
 
 use bulk::BulkPage;
 use export::ExportPage;
+use key_teleport::KeyTeleportPage;
 use seed_qr::{CameraState, SeedQrPage};
 use sign::SignPage;
 use state::{Activity, Outcome, Page, QrPreviewSize, ResultScope, WalletScope, WorkflowOutput};
@@ -54,6 +58,7 @@ pub(crate) struct SignerLabApp {
     export: ExportPage,
     sign: SignPage,
     bulk: BulkPage,
+    key_teleport: KeyTeleportPage,
     action: Option<Task<()>>,
     subscriptions: Vec<Subscription>,
 }
@@ -63,10 +68,11 @@ impl SignerLabApp {
         repository: AppRepository,
         runtime: Handle,
         signers: Vec<VirtualSigner>,
+        teleport_sessions: KeyTeleportSessionStore,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut app = Self::new_state(repository, runtime, signers, window, cx);
+        let mut app = Self::new_state(repository, runtime, signers, teleport_sessions, window, cx);
         app.subscriptions
             .push(cx.observe_window_appearance(window, |_, window, cx| {
                 Theme::sync_system_appearance(Some(window), cx);
@@ -81,6 +87,7 @@ impl SignerLabApp {
         repository: AppRepository,
         runtime: Handle,
         signers: Vec<VirtualSigner>,
+        teleport_sessions: KeyTeleportSessionStore,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -89,6 +96,7 @@ impl SignerLabApp {
         let seed_qr = SeedQrPage::new(window, cx);
         let sign = SignPage::new(window, cx);
         let bulk = BulkPage::new(window, cx);
+        let key_teleport = KeyTeleportPage::new(teleport_sessions, window, cx);
         let subscription =
             cx.subscribe_in(&sign.psbt_input, window, |app, _, event, window, cx| {
                 if matches!(event, gpui_kit::component::input::InputEvent::Change) {
@@ -119,6 +127,7 @@ impl SignerLabApp {
             export: ExportPage::default(),
             sign,
             bulk,
+            key_teleport,
             action: None,
             subscriptions: vec![subscription],
         }
@@ -153,8 +162,13 @@ impl SignerLabApp {
             self.set_output(None, window, cx);
         }
 
+        self.key_teleport.clear_sent();
         self.page = page;
         self.page_lifetime = Arc::new(());
+        if page == Page::KeyTeleport {
+            self.resume_teleport_receive(window, cx);
+        }
+
         cx.notify();
     }
 
@@ -175,6 +189,7 @@ impl SignerLabApp {
         self.export = ExportPage::default();
         self.sign.reset(window, cx);
         self.bulk.reset_workflow();
+        self.key_teleport.clear_sent();
         self.set_output(None, window, cx);
         cx.notify();
     }
@@ -414,6 +429,7 @@ impl Render for SignerLabApp {
             Page::Export => self.export_page(cx).into_any_element(),
             Page::Sign => self.sign_page(cx).into_any_element(),
             Page::Bulk => self.bulk_page(cx).into_any_element(),
+            Page::KeyTeleport => self.key_teleport_page(cx).into_any_element(),
         };
         h_flex()
             .size_full()

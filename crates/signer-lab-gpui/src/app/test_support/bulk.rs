@@ -204,6 +204,7 @@ mod tests {
                         Arc::clone(&fixtures.repository),
                         fixtures.runtime.handle().clone(),
                         fixtures.signers.clone(),
+                        fixtures.teleport_sessions(),
                         window,
                         cx,
                     );
@@ -281,6 +282,7 @@ mod tests {
                         Arc::clone(&fixtures.repository),
                         fixtures.runtime.handle().clone(),
                         fixtures.signers.clone(),
+                        fixtures.teleport_sessions(),
                         window,
                         cx,
                     );

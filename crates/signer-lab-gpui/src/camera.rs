@@ -1,5 +1,6 @@
 use std::{
     path::Path,
+    str::FromStr,
     time::{Duration, Instant},
 };
 
@@ -10,7 +11,9 @@ use nokhwa::{
     utils::{CameraIndex, RequestedFormat, RequestedFormatType},
 };
 use rxing::{RXingResult, RXingResultMetadataType, RXingResultMetadataValue};
-use signer_lab_core::{CompactSeedQr, MnemonicSecret, QrScanProgress, QrScanner, StandardSeedQr};
+use signer_lab_core::{
+    CompactSeedQr, KeyTeleportError, MnemonicSecret, QrScanProgress, QrScanner, StandardSeedQr,
+};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -47,6 +50,22 @@ pub(crate) fn scan_seed_qr(
     on_preview: impl FnMut(CameraPreview),
 ) -> Result<MnemonicSecret, String> {
     scan_code(control, on_preview, seed_qr_result)
+}
+
+/// Scans until a Key Teleport packet of type `T` appears and returns its text
+pub(crate) fn scan_key_teleport<T: FromStr<Err = KeyTeleportError>>(
+    control: &CancellationToken,
+    on_preview: impl FnMut(CameraPreview),
+) -> Result<String, String> {
+    scan_code(control, on_preview, |detected| {
+        let text = detected.getText().trim();
+        match T::from_str(text) {
+            Ok(_) => Some(Ok(text.to_owned())),
+            // the other side's QR is a likely mix-up, so stop and say so instead of waiting
+            Err(error @ KeyTeleportError::UnexpectedPacket { .. }) => Some(Err(error.to_string())),
+            Err(_) => None,
+        }
+    })
 }
 
 pub(crate) fn read_seed_qr_image(path: &Path) -> Result<MnemonicSecret, String> {

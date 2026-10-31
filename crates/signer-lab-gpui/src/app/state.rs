@@ -12,15 +12,17 @@ pub(super) enum Page {
     Export,
     Sign,
     Bulk,
+    KeyTeleport,
 }
 
 impl Page {
-    pub(super) const ALL: [Self; 5] = [
+    pub(super) const ALL: [Self; 6] = [
         Self::Wallet,
         Self::SeedQr,
         Self::Export,
         Self::Sign,
         Self::Bulk,
+        Self::KeyTeleport,
     ];
 
     pub(super) const fn label(self) -> &'static str {
@@ -30,6 +32,7 @@ impl Page {
             Self::Export => "Export",
             Self::Sign => "Sign",
             Self::Bulk => "Bulk",
+            Self::KeyTeleport => "Key Teleport",
         }
     }
 }
