@@ -103,8 +103,8 @@ pub(crate) enum SignerCommand {
         name: String,
         #[arg(long, default_value_t = 0)]
         account_index: u32,
-        #[arg(long, default_value_t = 12, value_parser = ["12", "24"])]
-        words: usize,
+        #[arg(long, value_enum, default_value_t = WordCountArg::Twelve)]
+        words: WordCountArg,
     },
     /// Import recovery words or standard seed QR digits from a UTF-8 file
     Import {
@@ -119,7 +119,7 @@ pub(crate) enum SignerCommand {
     Reveal(SignerSelection),
     /// Export a saved signer as standard seed QR digits
     SeedQr(SignerSelection),
-    /// Delete signer metadata and its Keychain secret
+    /// Delete signer metadata and its saved recovery words
     Delete(SignerSelection),
 }
 
@@ -320,6 +320,23 @@ pub(crate) enum DestinationCommand {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum WordCountArg {
+    #[value(name = "12")]
+    Twelve,
+    #[value(name = "24")]
+    TwentyFour,
+}
+
+impl WordCountArg {
+    pub(crate) const fn count(self) -> usize {
+        match self {
+            Self::Twelve => 12,
+            Self::TwentyFour => 24,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum NetworkArg {
     Mutinynet,
     Testnet4,
@@ -344,7 +361,39 @@ pub(crate) enum PsbtFormatArg {
 mod tests {
     use clap::Parser as _;
 
-    use super::Cli;
+    use super::{Cli, Command, SignerCommand};
+
+    #[test]
+    fn signer_generate_parses_supported_word_counts() {
+        for (words, expected) in [(None, 12), (Some("12"), 12), (Some("24"), 24)] {
+            let mut args = vec!["signer-lab-cli", "signer", "generate", "--name", "Test"];
+            args.extend(words.map(|words| ["--words", words]).into_iter().flatten());
+
+            let Command::Signer {
+                command: SignerCommand::Generate { words, .. },
+            } = Cli::try_parse_from(args)
+                .expect("supported word count")
+                .command
+            else {
+                panic!("expected signer generate");
+            };
+
+            assert_eq!(words.count(), expected);
+        }
+
+        assert!(
+            Cli::try_parse_from([
+                "signer-lab-cli",
+                "signer",
+                "generate",
+                "--name",
+                "x",
+                "--words",
+                "13"
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn bulk_plan_rejects_invalid_amounts_and_counts_before_wallet_access() {

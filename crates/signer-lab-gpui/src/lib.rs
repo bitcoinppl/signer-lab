@@ -3,7 +3,6 @@
 mod app;
 mod camera;
 mod qr_image;
-mod secrets;
 
 #[cfg(feature = "test-support")]
 pub use app::test_support;
@@ -16,7 +15,7 @@ use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::{
     AppContext as _, Bounds, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size,
 };
-use signer_lab_core::{KeyTeleportSessionStore, LabStore, SignerRepository};
+use signer_lab_core::{FileSecretStore, KeyTeleportSessionStore, LabStore, SignerRepository};
 
 use crate::app::{AppRepository, SignerLabApp, design};
 
@@ -42,7 +41,7 @@ pub fn run() -> Result<()> {
     let store = runtime.block_on(LabStore::open_or_create(data_dir.join("metadata.db")))?;
     let repository = SignerRepository::new(
         store,
-        secrets::AppSecretStore::Keychain,
+        FileSecretStore::new(data_dir.join("secrets")),
         data_dir.join("wallets"),
     );
 

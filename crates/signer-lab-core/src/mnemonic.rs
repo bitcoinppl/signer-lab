@@ -81,7 +81,7 @@ impl MnemonicSecret {
             .map_err_str(MnemonicError::FinalWord)
     }
 
-    /// Exposes the mnemonic for a short operation such as Keychain storage.
+    /// Exposes the mnemonic for a short operation such as writing it to the secret store.
     #[must_use]
     pub fn expose_phrase(&self) -> &str {
         self.0.expose_secret()

@@ -32,7 +32,7 @@ Read `ARCHITECTURE.md` before changes to wallet ownership, persistence, signing,
 
 ## Secrets and data
 
-- Mnemonics are Keychain data. Do not log or store them in Turso, SQLite metadata, fixtures, or snapshots.
+- Mnemonics live only in `FileSecretStore` files under the data directory's `secrets/`. Do not log or store them in Turso, SQLite metadata, fixtures, or snapshots.
 - Mainnet is not a valid version 1 network state.
 - BDK owns wallet changesets and outpoint locks. Toasty and Turso own app metadata and operation state.
 - Persist operation state before wallet locks. Reconcile both stores at startup.

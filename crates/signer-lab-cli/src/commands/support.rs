@@ -4,13 +4,13 @@ use color_eyre::eyre::{Result, WrapErr as _, eyre};
 use directories::ProjectDirs;
 use serde::Serialize;
 use signer_lab_core::{
-    AddressType, ExportKind, KeychainSecretStore, LabNetwork, LabStore, NetworkWallet,
-    PsbtFileFormat, SignerId, SignerRepository, VirtualSigner,
+    AddressType, ExportKind, FileSecretStore, LabNetwork, LabStore, NetworkWallet, PsbtFileFormat,
+    SignerId, SignerRepository, VirtualSigner,
 };
 
 use crate::cli::{AddressTypeArg, ExportCommand, NetworkArg, PsbtFormatArg, WalletSelection};
 
-pub(super) type Repository = SignerRepository<KeychainSecretStore>;
+pub(super) type Repository = SignerRepository<FileSecretStore>;
 
 pub(super) async fn open_repository(override_path: Option<PathBuf>) -> Result<Repository> {
     let data_dir = data_dir(override_path)?;
@@ -21,7 +21,7 @@ pub(super) async fn open_repository(override_path: Option<PathBuf>) -> Result<Re
 
     Ok(SignerRepository::new(
         store,
-        KeychainSecretStore,
+        FileSecretStore::new(data_dir.join("secrets")),
         data_dir.join("wallets"),
     ))
 }

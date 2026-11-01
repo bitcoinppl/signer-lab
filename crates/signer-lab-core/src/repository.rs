@@ -84,7 +84,7 @@ impl<S: SecretStore> SignerRepository<S> {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid inputs, entropy generation, Keychain, or metadata storage
+    /// Returns an error for invalid inputs, entropy generation, secret storage, or metadata storage
     pub async fn generate(
         &mut self,
         name: impl Into<String>,
@@ -101,7 +101,7 @@ impl<S: SecretStore> SignerRepository<S> {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid import data, metadata, Keychain, or database failures
+    /// Returns an error for invalid import data, metadata, secret storage, or database failures
     pub async fn import(
         &mut self,
         name: impl Into<String>,
@@ -120,7 +120,7 @@ impl<S: SecretStore> SignerRepository<S> {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid metadata, Keychain, or database failures
+    /// Returns an error for invalid metadata, secret storage, or database failures
     pub async fn import_secret(
         &mut self,
         name: impl Into<String>,
@@ -134,7 +134,7 @@ impl<S: SecretStore> SignerRepository<S> {
     ///
     /// # Errors
     ///
-    /// Returns an error for Keychain, mnemonic, filesystem, or BDK failures
+    /// Returns an error for secret storage, mnemonic, filesystem, or BDK failures
     pub fn open_wallet(
         &self,
         signer: &VirtualSigner,
@@ -159,20 +159,20 @@ impl<S: SecretStore> SignerRepository<S> {
     ///
     /// # Errors
     ///
-    /// Returns an error when Keychain access or mnemonic validation fails
+    /// Returns an error when secret storage access or mnemonic validation fails
     pub fn reveal_secret(&self, signer_id: SignerId) -> Result<MnemonicSecret, RepositoryError> {
         self.secret_store
             .load(signer_id)
             .map_err(RepositoryError::SecretStore)
     }
 
-    /// Removes public metadata and the Keychain secret
+    /// Removes public metadata and the stored secret
     ///
     /// BDK database files are retained so a failed delete remains recoverable
     ///
     /// # Errors
     ///
-    /// Returns an error when Keychain or database deletion fails
+    /// Returns an error when secret or database deletion fails
     pub async fn delete(&mut self, signer_id: SignerId) -> Result<(), RepositoryError> {
         self.secret_store
             .delete(signer_id)
@@ -234,12 +234,12 @@ pub enum RepositoryError {
     /// Public metadata storage failed
     #[error("metadata storage failed: {0}")]
     Storage(#[source] StorageError),
-    /// Metadata storage failed after Keychain storage
+    /// Metadata storage failed after the secret was saved
     #[error("metadata storage failed: {source}")]
     MetadataSave {
         /// Metadata write failure
         source: StorageError,
-        /// Keychain rollback failure, when rollback also failed
+        /// Secret rollback failure, when rollback also failed
         rollback: Option<SecretStoreError>,
     },
     /// Another recoverable bulk operation already owns wallet inputs

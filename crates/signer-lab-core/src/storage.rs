@@ -167,7 +167,7 @@ impl LabStore {
 
     /// Removes signer metadata and its stored operations.
     ///
-    /// Keychain secret removal and BDK database removal are separate explicit actions.
+    /// Secret file removal and BDK database removal are separate explicit actions.
     ///
     /// # Errors
     ///

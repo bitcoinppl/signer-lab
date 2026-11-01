@@ -79,7 +79,7 @@ impl SignerLabApp {
             let delete = entity.clone();
             dialog
                 .title(format!("Delete “{}”?", signer.name))
-                .child("This removes the wallet and its Keychain words. Unsaved test coins become unreachable.")
+                .child("This removes the wallet and its saved recovery words. Unsaved test coins become unreachable.")
                 .on_ok(move |_, window, cx| {
                     let _ = confirm.update(cx, |app, cx| app.delete_signer(window, cx));
                     true

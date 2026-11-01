@@ -6,13 +6,13 @@ Signer Lab is a macOS test application for Cove wallet imports, QR PSBT signing,
 
 `VirtualSigner` owns one BIP39 secret and account index. A `NetworkWallet` owns chain state for one virtual signer and one supported network. Each network wallet owns BIP44, BIP49, and BIP84 BDK accounts.
 
-All BDK, Esplora, Keychain, export, signing, file-format, and operation behavior stays in `signer-lab-core`. GPUI owns window state and orchestrates typed core operations. The CLI maps typed commands to the same repository and domain APIs and writes JSON results.
+All BDK, Esplora, secret storage, export, signing, file-format, and operation behavior stays in `signer-lab-core`. GPUI owns window state and orchestrates typed core operations. The CLI maps typed commands to the same repository and domain APIs and writes JSON results.
 
 PSBT file detection is content-based. The core accepts binary PSBT, Base64 PSBT, BBQR frames, and `crypto-psbt` UR frames. Wallet export files keep their original text format, with one UR frame per line for multipart data.
 
 ## Persistence
 
-The mnemonic is stored only in macOS Keychain. Toasty with Turso stores signer metadata, network settings, destination reservations, and operation state. BDK stores wallet changesets and persistent outpoint locks in BDK-owned SQLite files.
+The mnemonic is stored only in an owner-only plain-text file, `secrets/<signer-id>.txt`, in the data directory. Signer Lab rejects mainnet, so file storage lets CLI and UI automation run without Keychain prompts. Toasty with Turso stores signer metadata, network settings, destination reservations, and operation state. BDK stores wallet changesets and persistent outpoint locks in BDK-owned SQLite files.
 
 Prepared operations are written before inputs are locked. Startup recovery compares nonterminal operations with BDK locks. It restores missing locks and releases locks without an owner.
 

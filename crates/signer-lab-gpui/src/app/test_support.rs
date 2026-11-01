@@ -1,7 +1,6 @@
 //! Offline application fixtures for screenshot and state verification
 
 use super::{AppRepository, SignerLabApp, error_message, state::Page, wallet::WalletView};
-use crate::secrets::AppSecretStore;
 use bitcoin::Amount;
 use gpui_kit::component::{Theme, ThemeMode, TitleBar};
 use gpui_kit::{
@@ -10,14 +9,12 @@ use gpui_kit::{
     test::TestWindowExt as _,
 };
 use signer_lab_core::{
-    KeyTeleportSessionStore, LabNetwork, LabStore, MnemonicSecret, SecretStore, SecretStoreError,
-    SignerId, SignerRepository, VirtualSigner,
+    FileSecretStore, KeyTeleportSessionStore, LabNetwork, LabStore, SignerRepository, VirtualSigner,
 };
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -25,32 +22,6 @@ use std::{
 const TEST_WORDS: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
-
-/// In-memory secrets keep tests independent of Keychain and native prompts
-#[derive(Default)]
-pub struct MemorySecretStore(Mutex<HashMap<SignerId, MnemonicSecret>>);
-impl SecretStore for MemorySecretStore {
-    fn save(&self, id: SignerId, secret: &MnemonicSecret) -> Result<(), SecretStoreError> {
-        let secret = MnemonicSecret::parse(secret.expose_phrase())
-            .map_err(SecretStoreError::InvalidSecret)?;
-        self.0
-            .lock()
-            .expect("fixture secrets lock")
-            .insert(id, secret);
-        Ok(())
-    }
-
-    fn load(&self, id: SignerId) -> Result<MnemonicSecret, SecretStoreError> {
-        let secrets = self.0.lock().expect("fixture secrets lock");
-        let phrase = secrets.get(&id).map_or("", MnemonicSecret::expose_phrase);
-        MnemonicSecret::parse(phrase).map_err(SecretStoreError::InvalidSecret)
-    }
-
-    fn delete(&self, id: SignerId) -> Result<(), SecretStoreError> {
-        self.0.lock().expect("fixture secrets lock").remove(&id);
-        Ok(())
-    }
-}
 
 mod bulk;
 mod export;
@@ -130,7 +101,7 @@ impl ScreenshotFixtures {
                 .map_err(error_message)?;
             let mut repository = SignerRepository::new(
                 store,
-                AppSecretStore::Memory(MemorySecretStore::default()),
+                FileSecretStore::new(directory.join("secrets")),
                 directory.join("wallets"),
             );
 

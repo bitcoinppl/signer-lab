@@ -107,7 +107,7 @@ impl<S: SecretStore> SignerRepository<S> {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid saved plans, Keychain access, BDK persistence, or storage
+    /// Returns an error for invalid saved plans, secret storage, BDK persistence, or storage
     pub async fn reconcile_bulk_reservations(
         &mut self,
         signer: &VirtualSigner,

@@ -11,7 +11,7 @@ use gpui_kit::{
     SharedString, Styled as _, Subscription, Task, Window, div,
 };
 use signer_lab_core::{
-    KeyTeleportSessionStore, LabNetwork, SignerId, SignerRepository, VirtualSigner,
+    FileSecretStore, KeyTeleportSessionStore, LabNetwork, SignerId, SignerRepository, VirtualSigner,
 };
 use tokio::{runtime::Handle, sync::Mutex};
 
@@ -37,7 +37,7 @@ use sign::SignPage;
 use state::{Activity, Outcome, Page, QrPreviewSize, ResultScope, WalletScope, WorkflowOutput};
 use wallet::{WalletPage, WalletPane};
 
-pub(crate) type AppRepository = Arc<Mutex<SignerRepository<crate::secrets::AppSecretStore>>>;
+pub(crate) type AppRepository = Arc<Mutex<SignerRepository<FileSecretStore>>>;
 
 pub(crate) struct SignerLabApp {
     repository: AppRepository,

@@ -21,7 +21,9 @@ pub(super) async fn run(
             account_index,
             words,
         } => {
-            let created = repository.generate(name, account_index, words).await?;
+            let created = repository
+                .generate(name, account_index, words.count())
+                .await?;
             let output = GeneratedSignerOutput {
                 signer: created.signer,
                 mnemonic: created.secret.expose_phrase().to_owned(),

@@ -2,14 +2,17 @@
 
 Signer Lab is a macOS desktop test tool for Cove wallet import, PSBT signing, and UTXO testing. It replaces a Coldcard or Blockstream Jade during test flows. It does not emulate device screens, firmware, USB, or serial protocols.
 
-Version 1 supports MutinyNet and Testnet4 only. Do not import a production mnemonic.
+Version 1 supports MutinyNet and Testnet4 only.
+
+> [!WARNING]
+> Never use real keys with Signer Lab. To keep testing simple, recovery words are stored as plain-text files on disk instead of in macOS Keychain, so automated test runs never stop for a Keychain prompt. This is a deliberate security tradeoff: anything that can read your user's files can read these words. Use only throwaway test-network mnemonics, and never import a mnemonic that has held or will hold mainnet funds.
 
 ## Features
 
 - Create a 12-word or 24-word virtual signer, or import BIP39 recovery words
 - Use the dedicated SeedQR screen to import standard numeric text or standard and compact QR images
 - Export recovery words as a standard SeedQR, then copy the digits or save the QR as SVG
-- Store recovery words in macOS Keychain
+- Store recovery words in owner-only files, so automation never waits on a Keychain prompt
 - Open BIP44, BIP49, and BIP84 BDK wallets for MutinyNet or Testnet4
 - Sync all accounts with Cove's progressive Esplora scanner
 - Export Coldcard generic JSON, descriptors, Electrum JSON, Wasabi JSON, XPUBs, BIP380 keys, and Jade UR data
@@ -33,7 +36,7 @@ Bulk plans are saved before BDK locks their inputs. On startup, Signer Lab resto
 just run
 ```
 
-This command builds, signs, and opens the application bundle. The stable signature lets macOS keep the Keychain approval across rebuilds. An existing Keychain item can ask once when you first switch from an unsigned or ad-hoc build.
+This command builds, signs, and opens the application bundle. The stable signature lets macOS keep the camera approval across rebuilds.
 
 Create the bundle without opening it with:
 
@@ -57,13 +60,13 @@ just clippy
 just test
 ```
 
-The application stores mnemonics in macOS Keychain. It stores Toasty metadata and BDK wallet databases in the macOS application data directory.
+The application stores Toasty metadata, BDK wallet databases, and mnemonics in the macOS application data directory. Each mnemonic is a plain-text `secrets/<signer-id>.txt` file readable only by your user. Only test-network keys are accepted, so they are not stored in Keychain.
 
 ## CLI automation
 
-The CLI uses the same data directory, Keychain secrets, BDK wallets, exports, signing rules, and recoverable bulk operations as the desktop app. Command results use JSON on standard output. Errors use standard error and a nonzero exit status.
+The CLI uses the same data directory, secret files, BDK wallets, exports, signing rules, and recoverable bulk operations as the desktop app. Command results use JSON on standard output. Errors use standard error and a nonzero exit status.
 
-`just cli` builds the debug CLI and signs it with the same identity as the application bundle, so macOS keeps an Always Allow Keychain approval across rebuilds. The CLI has its own identity, so it asks once separately from the app.
+Pass `--data-dir` to give an automated run its own metadata, wallets, and secrets.
 
 ```sh
 # List virtual signers

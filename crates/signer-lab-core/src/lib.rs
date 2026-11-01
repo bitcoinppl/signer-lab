@@ -22,7 +22,7 @@ pub mod operation;
 pub mod qr;
 /// Signer storage and bulk-operation orchestration
 pub mod repository;
-/// Secret storage abstractions and macOS Keychain support
+/// Secret storage abstractions and the file-backed signer secret store
 pub mod secret_store;
 /// Standard and compact `SeedQR` secrets
 pub mod seed_qr;
@@ -65,7 +65,7 @@ pub use repository::{
     BulkShape, CreatedSigner, CurrentBulkOperation, InputReservation, OutputCount, PlanBulk,
     PlannedBulkOperation, RepositoryError, ReservationReconciliation, SignerRepository,
 };
-pub use secret_store::{KeychainSecretStore, SecretStore, SecretStoreError};
+pub use secret_store::{FileSecretStore, SecretStore, SecretStoreError};
 pub use seed_qr::{CompactSeedQr, SeedQr, SeedQrError, StandardSeedQr};
 pub use signing::{
     PendingPsbt, PsbtOutputReview, PsbtReview, PsbtReviewError, ReviewedPsbt, SignedPsbt,
