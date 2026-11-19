@@ -9,7 +9,7 @@ use gpui_kit::component::{
     empty::{Empty, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
     group_box::{GroupBox, GroupBoxVariants as _},
     h_flex,
-    input::{Textarea, TextareaState},
+    input::{Input, InputState, Textarea, TextareaState},
     v_flex,
 };
 use gpui_kit::{
@@ -19,6 +19,16 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 use std::sync::Arc;
+
+/// Builds a single-line input whose text line fits inside its box
+///
+/// The theme's 13px font size sets the rem, so a medium input is 26px tall,
+/// but gpui-component keeps its fixed 8px vertical padding. That leaves an
+/// 8px content box for a 16px text line, which clips the glyphs once the
+/// field takes focus. Rem-relative padding keeps the line height inside the box
+pub(super) fn text_input(state: &Entity<InputState>) -> Input {
+    Input::new(state).py_1()
+}
 
 /// Groups decimal digits so wallet amounts remain easy to read
 pub(super) fn format_sats(value: u64) -> String {

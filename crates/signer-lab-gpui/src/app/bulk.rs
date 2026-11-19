@@ -11,7 +11,7 @@ use gpui_kit::component::{
     description_list::DescriptionList,
     form::{Form, field},
     h_flex,
-    input::{Input, InputState, Textarea, TextareaState},
+    input::{InputState, Textarea, TextareaState},
     menu::{DropdownMenu as _, PopupMenuItem},
     scroll::ScrollableElement as _,
     tag::Tag,
@@ -528,12 +528,14 @@ impl SignerLabApp {
                         .child(
                             field()
                                 .label("Count")
-                                .child(Input::new(&form.count).disabled(disabled)),
+                                .child(components::text_input(&form.count).disabled(disabled)),
                         )
                         .child(
-                            field()
-                                .label("Amount")
-                                .child(Input::new(&form.amount).suffix("sats").disabled(disabled)),
+                            field().label("Amount").child(
+                                components::text_input(&form.amount)
+                                    .suffix("sats")
+                                    .disabled(disabled),
+                            ),
                         ),
                 ),
             );
@@ -585,7 +587,7 @@ impl SignerLabApp {
             )))
             .child(
                 field().label("Fee rate").child(
-                    Input::new(&form.fee_rate)
+                    components::text_input(&form.fee_rate)
                         .suffix("sat/vB")
                         .disabled(disabled),
                 ),
@@ -646,7 +648,7 @@ impl SignerLabApp {
             destination = destination.child(
                 field()
                     .label("Start index")
-                    .child(Input::new(&form.start_index).disabled(disabled)),
+                    .child(components::text_input(&form.start_index).disabled(disabled)),
             );
         }
 

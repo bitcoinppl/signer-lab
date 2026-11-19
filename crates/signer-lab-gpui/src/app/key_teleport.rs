@@ -7,7 +7,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     form::{field, v_form},
     h_flex,
-    input::{Input, InputState, Textarea, TextareaState},
+    input::{InputState, Textarea, TextareaState},
     v_flex,
 };
 use gpui_kit::{
@@ -389,43 +389,45 @@ impl SignerLabApp {
         };
 
         let scanning = self.teleport_scanning(TeleportScan::Request);
-        let request =
-            components::group_box("Receiver request")
-                .flex_1()
-                .min_w_0()
-                .child(
-                    v_flex()
-                        .gap_3()
-                        .child(
-                            v_form()
-                                .child(
-                                    field().label("Request").child(
-                                        Textarea::new(&self.key_teleport.request_text)
-                                            .h(px(96.0))
-                                            .disabled(self.busy()),
-                                    ),
-                                )
-                                .child(field().label("Code").child(
-                                    Input::new(&self.key_teleport.code).disabled(self.busy()),
-                                )),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    Button::new("teleport-send")
-                                        .primary()
-                                        .label(format!("Send {}", signer.name))
-                                        .disabled(self.busy())
-                                        .on_click(cx.listener(|app, _, window, cx| {
-                                            app.send_key_teleport(window, cx);
-                                        })),
-                                )
-                                .child(self.teleport_scan_button(TeleportScan::Request, cx)),
-                        )
-                        .children(scanning.then(|| self.camera_preview(cx))),
-                )
-                .footer("Scan or paste the receiver's QR, then type the code it shows");
+        let request = components::group_box("Receiver request")
+            .flex_1()
+            .min_w_0()
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(
+                        v_form()
+                            .child(
+                                field().label("Request").child(
+                                    Textarea::new(&self.key_teleport.request_text)
+                                        .h(px(96.0))
+                                        .disabled(self.busy()),
+                                ),
+                            )
+                            .child(
+                                field().label("Code").child(
+                                    components::text_input(&self.key_teleport.code)
+                                        .disabled(self.busy()),
+                                ),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("teleport-send")
+                                    .primary()
+                                    .label(format!("Send {}", signer.name))
+                                    .disabled(self.busy())
+                                    .on_click(cx.listener(|app, _, window, cx| {
+                                        app.send_key_teleport(window, cx);
+                                    })),
+                            )
+                            .child(self.teleport_scan_button(TeleportScan::Request, cx)),
+                    )
+                    .children(scanning.then(|| self.camera_preview(cx))),
+            )
+            .footer("Scan or paste the receiver's QR, then type the code it shows");
 
         let response = components::group_box("Sender response")
             .flex_1()
@@ -484,13 +486,13 @@ impl SignerLabApp {
                             )
                             .child(
                                 field().label("Password").child(
-                                    Input::new(&self.key_teleport.password)
+                                    components::text_input(&self.key_teleport.password)
                                         .disabled(self.busy() || !receiving),
                                 ),
                             )
                             .child(
                                 field().label("Name").child(
-                                    Input::new(&self.key_teleport.signer_name)
+                                    components::text_input(&self.key_teleport.signer_name)
                                         .disabled(self.busy() || !receiving),
                                 ),
                             ),
