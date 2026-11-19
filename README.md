@@ -4,6 +4,11 @@ Signer Lab is a macOS desktop test tool for Cove wallet import, PSBT signing, an
 
 Version 1 supports MutinyNet and Testnet4 only.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/wallet-dark.png">
+  <img alt="Wallet page showing BIP44, BIP49, and BIP84 accounts with balances and the selected account's XPUB" src="docs/screenshots/wallet-light.png">
+</picture>
+
 > [!WARNING]
 > Never use real keys with Signer Lab. To keep testing simple, recovery words are stored as plain-text files on disk instead of in macOS Keychain, so automated test runs never stop for a Keychain prompt. This is a deliberate security tradeoff: anything that can read your user's files can read these words. Use only throwaway test-network mnemonics, and never import a mnemonic that has held or will hold mainnet funds.
 
@@ -29,6 +34,44 @@ Version 1 supports MutinyNet and Testnet4 only.
 Key Teleport receive sessions are saved in `key-teleport/receive-session.json` in the data directory with owner-only permissions. The app and the CLI share the session, it expires after 24 hours, and it is deleted after a successful import. Only BIP39 recovery words can be received; extended private keys and secure notes are rejected.
 
 Bulk plans are saved before BDK locks their inputs. On startup, Signer Lab restores active locks and releases locks that have no saved operation. A signed plan is saved before relay, so an Esplora policy rejection does not remove the signed PSBT.
+
+## Screenshots
+
+### Sign
+
+Review a PSBT's inputs, outputs, change, and fee, then sign it and show the result as BBQR or UR frames.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sign-signed-dark.png">
+  <img alt="Sign page with a reviewed PSBT, its outputs and fee, and the signed PSBT as a BBQR code" src="docs/screenshots/sign-signed-light.png">
+</picture>
+
+### Export
+
+Export a watch-only wallet in Coldcard, Wasabi, Electrum, descriptor, XPUB, or Jade UR form.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/export-jade-ur-dark.png">
+  <img alt="Export page showing an animated Jade account UR code and its frames" src="docs/screenshots/export-jade-ur-light.png">
+</picture>
+
+### Bulk
+
+Plan fan-out, batch, or consolidation transactions, then sign and broadcast them together.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/bulk-planned-dark.png">
+  <img alt="Bulk page with a planned batch to XPUB-derived addresses and its reserved inputs" src="docs/screenshots/bulk-planned-light.png">
+</picture>
+
+### Key Teleport
+
+Send recovery words to a COLDCARD Key Teleport receiver, such as Cove.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/key-teleport-send-dark.png">
+  <img alt="Key Teleport send page with the encrypted response QR and its password" src="docs/screenshots/key-teleport-send-light.png">
+</picture>
 
 ## Development
 
@@ -58,6 +101,12 @@ Verification:
 just fmt
 just clippy
 just test
+```
+
+Regenerate the README screenshots from offline fixtures with:
+
+```sh
+just readme-screenshots
 ```
 
 The application stores Toasty metadata, BDK wallet databases, and mnemonics in the macOS application data directory. Each mnemonic is a plain-text `secrets/<signer-id>.txt` file readable only by your user. Only test-network keys are accepted, so they are not stored in Keychain.
