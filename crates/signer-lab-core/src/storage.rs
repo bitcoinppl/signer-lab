@@ -1,3 +1,7 @@
+// toasty 0.10's `#[index]` expansion reuses field spans for underscore-prefixed items it
+// generates outside the struct, so a struct-level allow cannot reach them
+#![allow(clippy::used_underscore_items)]
+
 use std::{
     path::{Path, PathBuf},
     str::FromStr as _,
