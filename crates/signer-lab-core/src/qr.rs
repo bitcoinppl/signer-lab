@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use bbqr::{
     continuous_join::{ContinuousJoinResult, ContinuousJoiner},
@@ -11,7 +11,7 @@ use bbqr::{
 use bitcoin::{Psbt, Transaction, consensus};
 use cove_ur::CryptoPsbt;
 use cove_util::ResultExt as _;
-use foundation_ur::{Decoder as UrDecoder, Encoder as UrEncoder, UR};
+use foundation_ur::{Decoder as UrDecoder, Encoder as UrEncoder, UR, fountain::chooser};
 use serde::{Deserialize, Serialize};
 
 /// A supported animated QR transport
@@ -186,12 +186,11 @@ impl QrFrames {
         let mut encoder = UrEncoder::new();
         encoder.start(ur_type, cbor, density.ur_fragment_len);
         let fragment_count = encoder.sequence_count() as usize;
-        let frame_count = fragment_count + fountain_part_count(fragment_count);
 
-        // UR text is case-insensitive and uppercase lets the QR use alphanumeric mode
-        let frames = (0..frame_count)
-            .map(|_| encoder.next_part().to_string().to_ascii_uppercase())
+        let mut frames: Vec<String> = (0..fragment_count)
+            .map(|_| ur_qr_text(&encoder.next_part()))
             .collect();
+        frames.extend(fountain_parts(&mut encoder, fragment_count));
 
         Self {
             transport: QrTransport::Ur,
@@ -230,9 +229,10 @@ impl QrFrames {
 
     /// Returns the error correction each frame's QR symbol should use
     ///
-    /// BBQR splits are sized against level L capacity, so BBQR stays at L. Uppercase UR at M is at
-    /// least one QR version smaller than the earlier lowercase byte-mode UR at L for every
-    /// supported fragment length, so UR gets the stronger level without denser modules
+    /// BBQR splits are sized against level L capacity, so BBQR stays at L. Alphanumeric mode packs
+    /// about 31% more text per bit than byte mode, and level M costs about 20% of capacity, so
+    /// uppercase UR at M is never a larger QR version than lowercase byte-mode UR at L. At the
+    /// default 200-byte fragments it is one version smaller, so UR gets the stronger level
     #[must_use]
     pub const fn error_correction(&self) -> QrErrorCorrection {
         match self.transport {
@@ -286,22 +286,46 @@ pub(crate) fn psbt_text_frames(
 
 /// Fountain parts that follow the fragment pass in one animated UR cycle
 ///
-/// Each part contains a given fragment with probability `1 / H(n)`, about 19% for 118 fragments,
-/// so two passes' worth of mixes recover a missed fragment many times over. The floor keeps short
-/// messages, where each pass is only a few frames, from repeating the same few mixes. A live
-/// encoder would never repeat, but `foundation-ur` borrows its message and cannot seek, so a
-/// bounded cycle keeps playback a plain index over owned strings
-fn fountain_part_count(fragment_count: usize) -> usize {
+/// Each part mixes a given fragment with probability `1 / H(n)`, about 19% for 118 fragments, so
+/// two passes' worth of mixes recover a missed fragment many times over. The floor keeps short
+/// messages from repeating the same few mixes. Parts keep coming until every fragment is in at
+/// least one mix, because a looped cycle that never mixes a fragment stalls a receiver that cannot
+/// read that fragment's frame. A live encoder would never repeat, but `foundation-ur` borrows its
+/// message and cannot seek, so a bounded cycle keeps playback a plain index over owned strings
+fn fountain_parts(encoder: &mut UrEncoder<'_, '_>, fragment_count: usize) -> Vec<String> {
     const FOUNTAIN_PASSES: usize = 2;
     const MIN_FOUNTAIN_PARTS: usize = 16;
 
     if fragment_count < 2 {
-        return 0;
+        return Vec::new();
     }
 
-    fragment_count
+    let minimum = fragment_count
         .saturating_mul(FOUNTAIN_PASSES)
-        .max(MIN_FOUNTAIN_PARTS)
+        .max(MIN_FOUNTAIN_PARTS);
+    let mut unmixed: BTreeSet<usize> = (0..fragment_count).collect();
+    let mut parts = Vec::with_capacity(minimum);
+
+    while parts.len() < minimum || !unmixed.is_empty() {
+        let part = encoder.next_part();
+        let UR::MultiPartDeserialized { fragment, .. } = &part else {
+            unreachable!("the UR encoder emits only multipart parts");
+        };
+
+        // the chooser is seeded by sequence and checksum, so this matches the encoder's mix
+        for index in fragment.indexes::<chooser::Alloc, BTreeSet<usize>>() {
+            unmixed.remove(&index);
+        }
+
+        parts.push(ur_qr_text(&part));
+    }
+
+    parts
+}
+
+/// UR text is case-insensitive and uppercase lets the QR use alphanumeric mode
+fn ur_qr_text(part: &UR<'_>) -> String {
+    part.to_string().to_ascii_uppercase()
 }
 
 /// Progress or completion from one scanned QR frame

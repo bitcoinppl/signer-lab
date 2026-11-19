@@ -12,9 +12,9 @@ PSBT file detection is content-based. The core accepts binary PSBT, Base64 PSBT,
 
 ## QR transport
 
-`QrFrames` owns one animated display cycle and the error-correction level its symbols need. A BBQR cycle is its split parts. A UR cycle starts with one frame for each fragment. When the payload has more than one fragment, the cycle then adds fountain parts: twice the fragment count, with at least 16. Each fountain part XORs a pseudo-random set of fragments, so a receiver that never reads one fragment's frame recovers it from a later mix. The app shows `n / total` during the fragment pass and `Mixed n / total` during the fountain parts. `foundation-ur` cannot seek, and its encoder borrows the message, so the cycle is computed once instead of streamed.
+`QrFrames` owns one animated display cycle and the error-correction level its symbols need. A BBQR cycle is its split parts. A UR cycle starts with one frame for each fragment. When the payload has more than one fragment, the cycle then adds fountain parts: twice the fragment count, with at least 16, and more until every fragment appears in at least one mix. Each fountain part XORs a pseudo-random set of fragments, so a receiver that never reads one fragment's frame recovers it from a later mix. The app shows `n / total` during the fragment pass and `Mixed n / total` during the fountain parts. `foundation-ur` cannot seek, and its encoder borrows the message, so the cycle is computed once instead of streamed.
 
-UR is case-insensitive. QR frames are uppercase so the symbol uses QR alphanumeric mode, and they render at error-correction level M. At every supported fragment length, that symbol is at least one QR version smaller than lowercase byte mode at level L. BBQR parts are sized against level L capacity, so BBQR and SeedQR stay at L. Files and copied text use lowercase canonical UR with each fragment once.
+UR is case-insensitive. QR frames are uppercase so the symbol uses QR alphanumeric mode, and they render at error-correction level M. That symbol is never a larger QR version than lowercase byte mode at level L, and it is one version smaller at the default 200-byte fragments. BBQR parts are sized against level L capacity, so BBQR and SeedQR stay at L. Files and copied text use lowercase canonical UR with each fragment once.
 
 ## Persistence
 

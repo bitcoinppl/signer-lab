@@ -16,7 +16,11 @@ const UNREADABLE_FRAGMENT: usize = 15;
 
 /// A PSBT about the size of the signed 47-input testnet PSBT that stalled Cove's scanner
 fn large_psbt() -> Psbt {
-    let input = (0..47_u8)
+    psbt_with_inputs(47, 450)
+}
+
+fn psbt_with_inputs(input_count: u8, bytes_per_input: usize) -> Psbt {
+    let input = (0..input_count)
         .map(|index| TxIn {
             previous_output: OutPoint::new(Txid::from_byte_array([index; 32]), u32::from(index)),
             script_sig: ScriptBuf::new(),
@@ -43,7 +47,7 @@ fn large_psbt() -> Psbt {
                 type_value: 0xf0,
                 key: vec![index],
             },
-            vec![index; 450],
+            vec![index; bytes_per_input],
         );
     }
 
@@ -59,13 +63,17 @@ fn fragment_count(frames: &QrFrames) -> usize {
 }
 
 /// Frames a receiver reads while one fragment's frame is unreadable on every loop
-fn without_unreadable_fragment(frames: &QrFrames) -> impl Iterator<Item = &str> {
+fn without_fragment(frames: &QrFrames, fragment: usize) -> impl Iterator<Item = &str> {
     frames
         .frames()
         .iter()
         .enumerate()
-        .filter(|(index, _)| *index != UNREADABLE_FRAGMENT - 1)
+        .filter(move |(index, _)| *index != fragment - 1)
         .map(|(_, frame)| frame.as_str())
+}
+
+fn without_unreadable_fragment(frames: &QrFrames) -> impl Iterator<Item = &str> {
+    without_fragment(frames, UNREADABLE_FRAGMENT)
 }
 
 /// Decodes the way Cove's scanner does, through `cove_ur` case normalization and the fountain decoder
@@ -127,6 +135,23 @@ fn ur_cycle_completes_when_one_fragment_is_never_read() {
         cove_decode(without_unreadable_fragment(&frames)),
         Some(expected)
     );
+}
+
+#[test]
+fn every_fragment_is_mixed_before_the_cycle_repeats() {
+    // with only the minimum 16 fountain parts, none of them mixes fragment 2 of this PSBT
+    let expected = psbt_with_inputs(1, 1_352);
+    let frames = QrFrames::from_psbt(&expected, QrTransport::Ur, QrDensity::default())
+        .expect("PSBT encodes as UR");
+    let fragments = fragment_count(&frames);
+    assert_eq!(fragments, 8);
+
+    for fragment in 1..=fragments {
+        assert!(
+            signer_lab_decode(without_fragment(&frames, fragment)).as_ref() == Some(&expected),
+            "cycle without fragment {fragment} does not decode"
+        );
+    }
 }
 
 #[test]
