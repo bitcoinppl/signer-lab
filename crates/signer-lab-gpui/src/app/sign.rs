@@ -18,14 +18,14 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Context, Entity, FontFeatures, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Styled as _, Window, div, px,
+    Context, Entity, ExternalPaths, FontFeatures, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathPromptOptions, Styled as _, Window, div, px,
 };
 use signer_lab_core::{
     PendingPsbt, PsbtDecodeProgress, PsbtOutputReview, PsbtReview, QrDensity, QrScanner,
     QrTransport, ReviewedPsbt, decode_psbt_text, read_psbt,
 };
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -39,7 +39,11 @@ pub(super) struct SignPage {
 impl SignPage {
     pub(super) fn new(window: &mut Window, cx: &mut Context<SignerLabApp>) -> Self {
         Self {
-            psbt_input: text_area(window, cx, "Paste a PSBT, BBQR, or UR frames"),
+            psbt_input: text_area(
+                window,
+                cx,
+                "Paste a PSBT, BBQR, or UR frames, or drop a PSBT file",
+            ),
             reviewed: None,
             scanner: QrScanner::new(),
             transport: QrTransport::Bbqr,
@@ -118,25 +122,68 @@ impl SignerLabApp {
             return;
         }
 
-        self.clear_review(window, cx);
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some("Open PSBT".into()),
         });
-        self.run(
+        self.load_psbt_file(
             "Open file…",
+            async move {
+                Ok(prompt
+                    .await
+                    .map_err(error_message)?
+                    .map_err(error_message)?
+                    .and_then(|paths| paths.into_iter().next()))
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn drop_psbt_file(
+        &mut self,
+        dropped: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy() {
+            return;
+        }
+
+        let [path] = dropped.paths() else {
+            self.set_error("Drop one PSBT file", window, cx);
+            return;
+        };
+
+        let path = path.clone();
+        self.load_psbt_file(
+            "Opening dropped file",
+            async move { Ok(Some(path)) },
+            window,
+            cx,
+        );
+    }
+
+    /// Reads a PSBT file in any supported format into the input and reviews it
+    ///
+    /// The path resolves inside the task so a file dialog and a drop share one path; `None` means the user cancelled
+    fn load_psbt_file(
+        &mut self,
+        label: &'static str,
+        path: impl Future<Output = Result<Option<PathBuf>, String>> + Send + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_review(window, cx);
+        self.run(
+            label,
             ResultScope::Page(Page::Sign),
             window,
             cx,
             async move {
-                let Some(path) = prompt
-                    .await
-                    .map_err(error_message)?
-                    .map_err(error_message)?
-                    .and_then(|paths| paths.into_iter().next())
-                else {
+                let Some(path) = path.await? else {
                     return Ok(None);
                 };
 
@@ -360,7 +407,7 @@ impl SignerLabApp {
         } else {
             review = review.child(components::empty_state(
                 IconName::ScanLine,
-                "Paste or scan a PSBT",
+                "Paste, drop, or scan a PSBT",
                 None,
             ));
         }
@@ -492,6 +539,8 @@ impl SignerLabApp {
 
     fn psbt_input_panel(&self, cx: &Context<Self>) -> impl IntoElement {
         v_flex()
+            .id("psbt-input-panel")
+            .debug_selector(|| "psbt-input-panel".into())
             .w(px(360.0))
             .h_full()
             .flex_shrink_0()
@@ -499,6 +548,14 @@ impl SignerLabApp {
             .border_color(cx.theme().border)
             .p_4()
             .gap_3()
+            // the whole panel is the drop target so a file can land anywhere near the field
+            .when(!self.busy(), |panel| {
+                panel
+                    .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+                    .on_drop(cx.listener(|app, dropped: &ExternalPaths, window, cx| {
+                        app.drop_psbt_file(dropped, window, cx);
+                    }))
+            })
             .child(components::caption("PSBT", cx))
             .child(
                 Textarea::new(&self.sign.psbt_input)

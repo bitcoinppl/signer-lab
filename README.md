@@ -18,7 +18,7 @@ Version 1 supports MutinyNet and Testnet4 only.
 - Export Coldcard generic JSON, descriptors, Electrum JSON, Wasabi JSON, XPUBs, BIP380 keys, and Jade UR data
 - Save wallet exports through the native file dialog
 - Scan BBQR or `crypto-psbt` UR data with the camera, or paste PSBT and QR text
-- Open binary, Base64, BBQR, or UR PSBT files through the native file dialog
+- Open binary, Base64, BBQR, or UR PSBT files through the native file dialog or by dropping them on the PSBT field
 - Review inputs, outputs, signer matches, change, and fees before signing
 - Return a signed PSBT as BBQR or `crypto-psbt` UR QR frames
 - Plan, save, sign, and broadcast fan-out, independent batch, and consolidation transactions

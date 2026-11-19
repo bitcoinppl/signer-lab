@@ -258,7 +258,8 @@ mod tests {
         absolute::LockTime, bip32::ChildNumber, secp256k1::Secp256k1, transaction::Version,
     };
     use gpui_kit::{
-        AppContext as _, Context, TestAppContext, Window, test::TestAppContextExt as _,
+        AppContext as _, Context, ExternalPaths, FileDropEvent, TestAppContext, Window,
+        test::TestAppContextExt as _,
     };
     use signer_lab_core::{
         AddressType, KeyTeleportQr, LabNetwork, PendingPsbt, QrDensity, QrTransport,
@@ -581,6 +582,60 @@ mod tests {
         });
     }
 
+    /// Builds a one-input PSBT that the first fixture signer's native segwit account owns
+    fn owned_psbt(fixtures: &ScreenshotFixtures) -> Psbt {
+        let public = fixtures
+            .wallet
+            .accounts
+            .iter()
+            .find(|account| account.address_type == AddressType::NativeSegwit)
+            .expect("native account");
+        let suffix = [
+            ChildNumber::from_normal_idx(0).expect("branch"),
+            ChildNumber::from_normal_idx(0).expect("index"),
+        ];
+
+        let key = public
+            .account_xpub
+            .derive_pub(&Secp256k1::verification_only(), &suffix)
+            .expect("derived key");
+        let address = Address::from_str(&fixtures.wallet.snapshots[2].receive_address)
+            .expect("fixture address")
+            .require_network(LabNetwork::MutinyNet.bitcoin_network())
+            .expect("fixture network");
+        let previous_output = TxOut {
+            value: Amount::from_sat(2000),
+            script_pubkey: address.script_pubkey(),
+        };
+
+        let mut psbt = Psbt::from_unsigned_tx(Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1000),
+                script_pubkey: address.script_pubkey(),
+            }],
+        })
+        .expect("PSBT");
+
+        psbt.inputs[0].witness_utxo = Some(previous_output);
+        psbt.inputs[0].bip32_derivation.insert(
+            key.public_key,
+            (
+                public.master_fingerprint,
+                public.account_path.extend(suffix),
+            ),
+        );
+
+        psbt
+    }
+
     #[gpui_kit::test]
     fn psbt_edit_invalidates_review_and_signed_output(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
@@ -590,55 +645,7 @@ mod tests {
             let wallet = repository
                 .open_wallet(&fixtures.signers[0], LabNetwork::MutinyNet)
                 .expect("wallet");
-            let public = fixtures
-                .wallet
-                .accounts
-                .iter()
-                .find(|account| account.address_type == AddressType::NativeSegwit)
-                .expect("native account");
-            let suffix = [
-                ChildNumber::from_normal_idx(0).expect("branch"),
-                ChildNumber::from_normal_idx(0).expect("index"),
-            ];
-
-            let key = public
-                .account_xpub
-                .derive_pub(&Secp256k1::verification_only(), &suffix)
-                .expect("derived key");
-            let address = Address::from_str(&fixtures.wallet.snapshots[2].receive_address)
-                .expect("fixture address")
-                .require_network(LabNetwork::MutinyNet.bitcoin_network())
-                .expect("fixture network");
-            let previous_output = TxOut {
-                value: Amount::from_sat(2000),
-                script_pubkey: address.script_pubkey(),
-            };
-
-            let mut psbt = Psbt::from_unsigned_tx(Transaction {
-                version: Version::TWO,
-                lock_time: LockTime::ZERO,
-                input: vec![TxIn {
-                    previous_output: OutPoint::null(),
-                    script_sig: ScriptBuf::new(),
-                    sequence: Sequence::MAX,
-                    witness: Witness::default(),
-                }],
-                output: vec![TxOut {
-                    value: Amount::from_sat(1000),
-                    script_pubkey: address.script_pubkey(),
-                }],
-            })
-            .expect("PSBT");
-
-            psbt.inputs[0].witness_utxo = Some(previous_output);
-            psbt.inputs[0].bip32_derivation.insert(
-                key.public_key,
-                (
-                    public.master_fingerprint,
-                    public.account_path.extend(suffix),
-                ),
-            );
-
+            let psbt = owned_psbt(&fixtures);
             let reviewed = PendingPsbt::new(psbt).review(&wallet).expect("review");
             let signed = reviewed.clone().sign(&wallet, true).expect("sign");
             let frames = signed
@@ -675,6 +682,49 @@ mod tests {
             assert!(app.sign.reviewed.is_none());
             assert!(app.output.is_none());
             assert!(app.display_output.read(cx).value().is_empty());
+        });
+    }
+
+    #[gpui_kit::test]
+    async fn dropped_binary_psbt_file_fills_input_and_reviews(cx: &mut TestAppContext) {
+        // file reads and review run on the real Tokio executor
+        cx.executor().allow_parking();
+        cx.update(gpui_kit::init);
+        let fixtures = ScreenshotFixtures::new().expect("offline fixture");
+        let psbt = owned_psbt(&fixtures);
+        let path = fixtures.directory.join("unsigned.psbt");
+        std::fs::write(&path, psbt.serialize()).expect("binary PSBT file");
+
+        let (view, mut cx) = app_window(&fixtures, cx);
+        cx.update(|_, cx| view.update(cx, |app, _| app.page = Page::Sign));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let position = cx
+            .debug_bounds("psbt-input-panel")
+            .expect("PSBT input panel")
+            .center();
+
+        // the platform delivers a Finder drag as enter, move, then drop
+        cx.simulate_event(FileDropEvent::Entered {
+            position,
+            paths: ExternalPaths(vec![path.clone()].into()),
+        });
+        cx.simulate_event(FileDropEvent::Pending { position });
+        cx.simulate_event(FileDropEvent::Submit { position });
+
+        let handle = cx.update(|window, _| window.window_handle());
+        cx.wait_for(handle, Duration::from_secs(3), |_, cx| {
+            view.read(cx).sign.reviewed.is_some()
+        })
+        .await;
+
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert_eq!(
+                app.sign.psbt_input.read(cx).value().as_ref(),
+                psbt.to_string()
+            );
+            let review = app.sign.reviewed.as_ref().expect("review").review();
+            assert_eq!(review.matching_input_count, 1);
         });
     }
 
