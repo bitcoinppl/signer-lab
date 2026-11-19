@@ -13,7 +13,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     description_list::DescriptionList,
     h_flex,
-    input::{InputEvent, InputState, TextareaState},
+    input::{Input, InputEvent, InputState, TextareaState},
     menu::{DropdownMenu as _, PopupMenuItem},
     resizable::{h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
@@ -536,7 +536,7 @@ impl SignerLabApp {
                         }
                     }))
                     .child(
-                        components::text_input(&self.wallet.rename_name)
+                        Input::new(&self.wallet.rename_name)
                             .small()
                             .w(px(280.0))
                             .disabled(self.busy()),

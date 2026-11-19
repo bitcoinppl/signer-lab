@@ -10,7 +10,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     form::{field, v_form},
     h_flex,
-    input::{InputState, Textarea, TextareaState},
+    input::{Input, InputState, Textarea, TextareaState},
     v_flex,
 };
 use gpui_kit::{
@@ -344,32 +344,30 @@ impl SignerLabApp {
             return Self::no_wallet(cx).into_any_element();
         }
 
-        let import = components::group_box("Import")
-            .flex_1()
-            .min_w_0()
-            .child(
-                v_flex()
-                    .gap_3()
-                    .child(
-                        v_form()
-                            .child(
-                                field().label("Name").child(
-                                    components::text_input(&self.seed_qr.signer_name)
-                                        .disabled(self.busy()),
+        let import =
+            components::group_box("Import")
+                .flex_1()
+                .min_w_0()
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(
+                            v_form()
+                                .child(field().label("Name").child(
+                                    Input::new(&self.seed_qr.signer_name).disabled(self.busy()),
+                                ))
+                                .child(
+                                    field().label("Digits").child(
+                                        Textarea::new(&self.seed_qr.mnemonic)
+                                            .h(px(96.0))
+                                            .disabled(self.busy()),
+                                    ),
                                 ),
-                            )
-                            .child(
-                                field().label("Digits").child(
-                                    Textarea::new(&self.seed_qr.mnemonic)
-                                        .h(px(96.0))
-                                        .disabled(self.busy()),
-                                ),
-                            ),
-                    )
-                    .child(self.seed_import_actions(cx))
-                    .child(self.camera_preview(cx)),
-            )
-            .footer("Standard and Compact SeedQR");
+                        )
+                        .child(self.seed_import_actions(cx))
+                        .child(self.camera_preview(cx)),
+                )
+                .footer("Standard and Compact SeedQR");
         h_flex()
             .size_full()
             .p(px(design::CONTENT_PADDING))
@@ -449,7 +447,7 @@ impl SignerLabApp {
                                 ),
                         )
                         .child(
-                            components::text_input(&self.seed_qr.digits)
+                            Input::new(&self.seed_qr.digits)
                                 .readonly(true)
                                 .font_family(cx.theme().mono_font_family.clone()),
                         ),

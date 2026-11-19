@@ -5,7 +5,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     form::{field, v_form},
     h_flex,
-    input::Textarea,
+    input::{Input, Textarea},
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -141,9 +141,11 @@ impl SignerLabApp {
             .overflow_y_scrollbar()
             .child(title)
             .child(
-                v_form().child(field().label("Name").child(
-                    components::text_input(&self.seed_qr.signer_name).disabled(self.busy()),
-                )),
+                v_form().child(
+                    field()
+                        .label("Name")
+                        .child(Input::new(&self.seed_qr.signer_name).disabled(self.busy())),
+                ),
             )
             .child(h_flex().gap_6().items_start().child(generate).child(import))
     }
