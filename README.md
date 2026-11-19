@@ -25,7 +25,7 @@ Version 1 supports MutinyNet and Testnet4 only.
 - Scan BBQR or `crypto-psbt` UR data with the camera, or paste PSBT and QR text
 - Open binary, Base64, BBQR, or UR PSBT files through the native file dialog or by dropping them on the PSBT field
 - Review inputs, outputs, signer matches, change, and fees before signing
-- Return the signed transaction as hex and BBQR frames, or the signed PSBT as BBQR or `crypto-psbt` UR frames
+- Return the signed transaction as hex and BBQR frames, or the signed PSBT as BBQR or `crypto-psbt` UR frames. Animated UR adds fountain-coded parts after the fragments, so a scanner that misses one frame can still finish
 - Plan, save, sign, and broadcast fan-out, independent batch, and consolidation transactions
 - Derive bulk destinations from an address, XPUB, ranged descriptor, or another saved signer
 - Use exact fee rates from 0.1 sat/vB

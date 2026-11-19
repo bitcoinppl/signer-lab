@@ -17,7 +17,7 @@ use gpui_kit::{
     ClipboardItem, Context, Entity, Image, ImageFormat, IntoElement, ParentElement as _,
     PathPromptOptions, Styled as _, StyledImage as _, Task, Window, div, img, px,
 };
-use signer_lab_core::{StandardSeedQr, VirtualSigner};
+use signer_lab_core::{QrErrorCorrection, StandardSeedQr, VirtualSigner};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -325,7 +325,8 @@ impl SignerLabApp {
                 };
 
                 tokio::task::spawn_blocking(move || {
-                    std::fs::write(&path, crate::qr_image::svg(&frame)?).map_err(error_message)?;
+                    std::fs::write(&path, crate::qr_image::svg(&frame, QrErrorCorrection::Low)?)
+                        .map_err(error_message)?;
                     Ok(Some(path))
                 })
                 .await

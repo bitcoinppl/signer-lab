@@ -130,7 +130,7 @@ fn qr_accepts_uppercase_ur_but_rejects_mixed_transports() {
         QrFrames::from_psbt(&psbt, QrTransport::Bbqr, QrDensity::default()).expect("BBQR frames");
 
     scanner.reset();
-    scanner.receive(&frames.frames[0]).expect("BBQR frame");
+    scanner.receive(&frames.frames()[0]).expect("BBQR frame");
     assert!(matches!(
         scanner.receive(&ur),
         Err(QrTransportError::MixedTransports)
@@ -139,7 +139,7 @@ fn qr_accepts_uppercase_ur_but_rejects_mixed_transports() {
     scanner.reset();
     scanner.receive(&ur).expect("UR frame");
     assert!(matches!(
-        scanner.receive(&frames.frames[0]),
+        scanner.receive(&frames.frames()[0]),
         Err(QrTransportError::MixedTransports)
     ));
 
