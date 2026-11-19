@@ -231,8 +231,8 @@ impl QrFrames {
     ///
     /// BBQR splits are sized against level L capacity, so BBQR stays at L. Alphanumeric mode packs
     /// about 31% more text per bit than byte mode, and level M costs about 20% of capacity, so
-    /// uppercase UR at M is never a larger QR version than lowercase byte-mode UR at L. At the
-    /// default 200-byte fragments it is one version smaller, so UR gets the stronger level
+    /// uppercase UR at M is never a larger QR version than lowercase byte-mode UR at L, and UR gets
+    /// the stronger level. With full 200-byte fragments it is one version smaller
     #[must_use]
     pub const fn error_correction(&self) -> QrErrorCorrection {
         match self.transport {
