@@ -1,7 +1,7 @@
 use super::components::{Align, ColumnWidth};
 use super::{
     SignerLabApp, components, error_message,
-    state::{Page, QrPlayback, ResultScope, WorkflowOutput},
+    state::{EncodedSigned, Page, ResultScope, SignedFormat, SignedOutput, WorkflowOutput},
     text_area,
 };
 use crate::camera;
@@ -22,8 +22,8 @@ use gpui_kit::{
     ParentElement as _, PathPromptOptions, Styled as _, Window, div, px,
 };
 use signer_lab_core::{
-    PendingPsbt, PsbtDecodeProgress, PsbtOutputReview, PsbtReview, QrDensity, QrScanner,
-    QrTransport, ReviewedPsbt, decode_psbt_text, read_psbt,
+    PendingPsbt, PsbtDecodeProgress, PsbtOutputReview, PsbtReview, QrScanner, ReviewedPsbt,
+    decode_psbt_text, read_psbt,
 };
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::watch;
@@ -33,7 +33,8 @@ pub(super) struct SignPage {
     pub(super) psbt_input: Entity<TextareaState>,
     pub(super) reviewed: Option<ReviewedPsbt>,
     pub(super) scanner: QrScanner,
-    pub(super) transport: QrTransport,
+    /// Format to show after signing, kept across signs so a PSBT-only flow stays selected
+    pub(super) format: SignedFormat,
 }
 
 impl SignPage {
@@ -46,14 +47,14 @@ impl SignPage {
             ),
             reviewed: None,
             scanner: QrScanner::new(),
-            transport: QrTransport::Bbqr,
+            format: SignedFormat::default(),
         }
     }
 
     pub(super) fn reset(&mut self, window: &mut Window, cx: &mut Context<SignerLabApp>) {
         self.reviewed = None;
         self.scanner.reset();
-        self.transport = QrTransport::Bbqr;
+        self.format = SignedFormat::default();
         self.psbt_input
             .update(cx, |input, cx| input.set_value("", window, cx));
     }
@@ -62,7 +63,7 @@ impl SignPage {
 impl SignerLabApp {
     fn clear_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sign.reviewed = None;
-        if matches!(self.output, Some(WorkflowOutput::Signed { .. })) {
+        if matches!(self.output, Some(WorkflowOutput::Signed(_))) {
             self.set_output(None, window, cx);
         }
     }
@@ -245,7 +246,7 @@ impl SignerLabApp {
         );
     }
 
-    fn sign_psbt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn sign_psbt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(wallet_owner) = self.selected() else {
             return;
         };
@@ -257,7 +258,7 @@ impl SignerLabApp {
         let captured = self.sign.psbt_input.read(cx).value().to_string();
         let repository = Arc::clone(&self.repository);
         let network = self.network;
-        let transport = self.sign.transport;
+        let format = self.sign.format;
         self.run(
             "Signing PSBT",
             ResultScope::Page(Page::Sign),
@@ -270,69 +271,66 @@ impl SignerLabApp {
                     .map_err(error_message)?;
                 let signed = reviewed.sign(&wallet, true).map_err(error_message)?;
 
-                let frames = signed
-                    .qr_frames(transport, QrDensity::default())
-                    .map_err(error_message)?;
-                Ok((signed, frames))
+                EncodedSigned::new(signed, format)
             },
-            move |app, (signed, frames), window, cx| {
-                if app.sign.psbt_input.read(cx).value().as_ref() != captured {
-                    return;
-                }
-
-                if let Some(playback) = QrPlayback::animated(frames) {
-                    app.set_output(
-                        Some(WorkflowOutput::Signed { signed, playback }),
-                        window,
-                        cx,
-                    );
-                }
-            },
+            move |app, encoded, window, cx| app.show_signed(&captured, encoded, window, cx),
         );
     }
 
-    fn set_signed_transport(
+    /// Shows the signed result unless the PSBT input changed while it was encoding
+    fn show_signed(
         &mut self,
-        transport: QrTransport,
+        captured: &str,
+        encoded: EncodedSigned,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy() || self.sign.transport == transport {
+        if self.sign.psbt_input.read(cx).value().as_ref() != captured {
             return;
         }
 
-        self.sign.transport = transport;
-        let Some(WorkflowOutput::Signed { signed, .. }) = self.visible_output() else {
+        if let Some(output) = SignedOutput::new(encoded) {
+            self.set_output(Some(WorkflowOutput::Signed(Box::new(output))), window, cx);
+        }
+    }
+
+    pub(super) fn visible_signed(&self) -> Option<&SignedOutput> {
+        match self.visible_output() {
+            Some(WorkflowOutput::Signed(output)) => Some(output),
+            _ => None,
+        }
+    }
+
+    /// The format on screen, which differs from the preference when the transaction is not final
+    fn shown_signed_format(&self) -> SignedFormat {
+        self.visible_signed()
+            .map_or(self.sign.format, SignedOutput::format)
+    }
+
+    pub(super) fn set_signed_format(
+        &mut self,
+        format: SignedFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy() || self.shown_signed_format() == format {
+            return;
+        }
+
+        self.sign.format = format;
+        let Some(signed) = self.visible_signed().map(|output| output.signed().clone()) else {
             cx.notify();
             return;
         };
 
-        let signed = signed.clone();
         let captured = self.sign.psbt_input.read(cx).value().to_string();
         self.run(
             "Creating signed QR",
             ResultScope::Page(Page::Sign),
             window,
             cx,
-            async move {
-                let frames = signed
-                    .qr_frames(transport, QrDensity::default())
-                    .map_err(error_message)?;
-                Ok((signed, frames))
-            },
-            move |app, (signed, frames), window, cx| {
-                if app.sign.psbt_input.read(cx).value().as_ref() != captured {
-                    return;
-                }
-
-                if let Some(playback) = QrPlayback::animated(frames) {
-                    app.set_output(
-                        Some(WorkflowOutput::Signed { signed, playback }),
-                        window,
-                        cx,
-                    );
-                }
-            },
+            async move { EncodedSigned::new(signed, format) },
+            move |app, encoded, window, cx| app.show_signed(&captured, encoded, window, cx),
         );
     }
 
@@ -412,7 +410,18 @@ impl SignerLabApp {
             ));
         }
 
-        if let Some(WorkflowOutput::Signed { playback, .. }) = self.visible_output() {
+        if let Some(output) = self.visible_signed() {
+            if output.signed().transaction().is_none() {
+                review = review.child(Alert::info(
+                    "psbt-not-final",
+                    "Some inputs still need signatures, so only the signed PSBT is available",
+                ));
+            }
+
+            let title = match output.format() {
+                SignedFormat::Transaction => "Signed transaction",
+                SignedFormat::Psbt(_) => "Signed PSBT",
+            };
             review = review.child(
                 h_flex()
                     .gap_6()
@@ -420,9 +429,13 @@ impl SignerLabApp {
                     .min_h(px(320.0))
                     .items_stretch()
                     .flex_shrink_0()
-                    .child(components::qr_output(playback, self.qr_preview_size, cx))
+                    .child(components::qr_output(
+                        output.playback(),
+                        self.qr_preview_size,
+                        cx,
+                    ))
                     .child(components::payload_panel(
-                        "Signed PSBT",
+                        title,
                         &self.display_output,
                         Button::new("signed-copy")
                             .outline()
@@ -590,23 +603,23 @@ impl SignerLabApp {
                     .gap_3()
                     .child(components::caption("Signed QR", cx))
                     .child(components::segmented(
-                        "signed-transport",
-                        [QrTransport::Bbqr, QrTransport::Ur]
+                        "signed-format",
+                        SignedFormat::ALL
                             .into_iter()
-                            .map(|transport| components::Segment {
-                                value: transport,
-                                label: (if transport == QrTransport::Bbqr {
-                                    "BBQR"
-                                } else {
-                                    "UR"
-                                })
-                                .into(),
+                            // before signing every format is a valid preference
+                            .filter(|format| {
+                                self.visible_signed()
+                                    .is_none_or(|output| format.available(output.signed()))
+                            })
+                            .map(|format| components::Segment {
+                                value: format,
+                                label: format.label().into(),
                                 dot: None,
                             }),
-                        self.sign.transport,
+                        self.shown_signed_format(),
                         self.busy(),
                         |app, value, window, cx| {
-                            app.set_signed_transport(value, window, cx);
+                            app.set_signed_format(value, window, cx);
                         },
                         cx,
                     )),

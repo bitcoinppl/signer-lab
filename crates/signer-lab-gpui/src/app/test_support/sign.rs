@@ -1,9 +1,7 @@
 use super::{Page, ScreenshotFixtures, ScreenshotState, ShotSetup, error_message};
-use crate::app::state::{QrPlayback, WorkflowOutput};
+use crate::app::state::{EncodedSigned, SignedFormat, SignedOutput, WorkflowOutput};
 use bitcoin::{Amount, Psbt, Transaction, TxOut, absolute::LockTime, transaction::Version};
-use signer_lab_core::{
-    AddressType, LabNetwork, NetworkWallet, PendingPsbt, QrDensity, QrTransport,
-};
+use signer_lab_core::{AddressType, LabNetwork, NetworkWallet, PendingPsbt};
 
 /// Keeps screenshot setup with the page that owns it
 pub(crate) fn states() -> Vec<ScreenshotState> {
@@ -134,13 +132,10 @@ fn prepare(fixtures: &ScreenshotFixtures, state: ReviewFixture) -> Result<ShotSe
                 .clone()
                 .sign(&wallet, true)
                 .map_err(error_message)?;
-            let frames = signed
-                .qr_frames(QrTransport::Bbqr, QrDensity::default())
-                .map_err(error_message)?;
-            Some(WorkflowOutput::Signed {
-                signed,
-                playback: QrPlayback::animated(frames).ok_or("missing signed QR")?,
-            })
+            let encoded = EncodedSigned::new(signed, SignedFormat::default())?;
+            Some(WorkflowOutput::Signed(Box::new(
+                SignedOutput::new(encoded).ok_or("missing signed QR")?,
+            )))
         } else {
             None
         };

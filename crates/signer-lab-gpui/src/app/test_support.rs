@@ -250,7 +250,10 @@ mod tests {
         bulk::BulkWorkflow,
         design,
         key_teleport::{TeleportMode, TeleportedQr},
-        state::{Activity, Page, QrPlayback, ResultScope, WorkflowOutput},
+        state::{
+            Activity, EncodedSigned, Page, QrPlayback, ResultScope, SignedFormat, SignedOutput,
+            WorkflowOutput,
+        },
         wallet::WalletPane,
     };
     use bitcoin::{
@@ -261,9 +264,7 @@ mod tests {
         AppContext as _, Context, ExternalPaths, FileDropEvent, TestAppContext, Window,
         test::TestAppContextExt as _,
     };
-    use signer_lab_core::{
-        AddressType, KeyTeleportQr, LabNetwork, PendingPsbt, QrDensity, QrTransport,
-    };
+    use signer_lab_core::{AddressType, KeyTeleportQr, LabNetwork, PendingPsbt, QrTransport};
     use std::{str::FromStr as _, sync::Arc, time::Duration};
     use tokio::sync::{oneshot, watch};
     use tokio_util::sync::CancellationToken;
@@ -637,10 +638,93 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    async fn signing_shows_the_transaction_and_switches_to_the_psbt(cx: &mut TestAppContext) {
+        // signing and QR encoding run on the real Tokio executor
+        cx.executor().allow_parking();
+        cx.update(gpui_kit::init);
+        let fixtures = ScreenshotFixtures::new().expect("offline fixture");
+        let psbt = owned_psbt(&fixtures);
+        let reviewed = fixtures.runtime.block_on(async {
+            let repository = fixtures.repository.lock().await;
+            let wallet = repository
+                .open_wallet(&fixtures.signers[0], LabNetwork::MutinyNet)
+                .expect("wallet");
+            PendingPsbt::new(psbt.clone())
+                .review(&wallet)
+                .expect("review")
+        });
+
+        let (view, mut cx) = app_window(&fixtures, cx);
+        cx.update(|window, cx| {
+            view.update(cx, |app, cx| {
+                app.page = Page::Sign;
+                app.sign.psbt_input.update(cx, |input, cx| {
+                    input.set_value(psbt.to_string(), window, cx);
+                });
+                app.sign.reviewed = Some(reviewed);
+                app.sign_psbt(window, cx);
+            });
+        });
+
+        let handle = cx.update(|window, _| window.window_handle());
+        cx.wait_for(handle, Duration::from_secs(3), |_, cx| {
+            view.read(cx).visible_signed().is_some()
+        })
+        .await;
+
+        let transaction = cx.update(|_, cx| {
+            let app = view.read(cx);
+            let output = app.visible_signed().expect("signed output");
+            let transaction = output.signed().transaction().expect("final transaction");
+            assert_eq!(output.format(), SignedFormat::Transaction);
+            assert_eq!(transaction.compute_txid(), psbt.unsigned_tx.compute_txid());
+            assert_eq!(
+                app.display_output.read(cx).value().as_ref(),
+                bitcoin::consensus::encode::serialize_hex(transaction)
+            );
+
+            // a BBQR header is "B$", the encoding, then the file type
+            assert_eq!(output.playback().current_frame().get(3..4), Some("T"));
+            transaction.clone()
+        });
+
+        cx.update(|window, cx| {
+            view.update(cx, |app, cx| {
+                app.set_signed_format(SignedFormat::Psbt(QrTransport::Ur), window, cx);
+            });
+        });
+        cx.wait_for(handle, Duration::from_secs(3), |_, cx| {
+            view.read(cx)
+                .visible_signed()
+                .is_some_and(|output| output.format() != SignedFormat::Transaction)
+        })
+        .await;
+
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            let output = app.visible_signed().expect("signed output");
+            assert_eq!(output.format(), SignedFormat::Psbt(QrTransport::Ur));
+            assert_eq!(output.signed().transaction(), Some(&transaction));
+            assert_eq!(
+                app.display_output.read(cx).value().as_ref(),
+                output.signed().psbt().to_string()
+            );
+            assert!(
+                output
+                    .playback()
+                    .current_frame()
+                    .to_ascii_lowercase()
+                    .starts_with("ur:crypto-psbt/")
+            );
+            assert_eq!(app.sign.format, SignedFormat::Psbt(QrTransport::Ur));
+        });
+    }
+
+    #[gpui_kit::test]
     fn psbt_edit_invalidates_review_and_signed_output(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let fixtures = ScreenshotFixtures::new().expect("offline fixture");
-        let (reviewed, signed, frames) = fixtures.runtime.block_on(async {
+        let (reviewed, encoded) = fixtures.runtime.block_on(async {
             let repository = fixtures.repository.lock().await;
             let wallet = repository
                 .open_wallet(&fixtures.signers[0], LabNetwork::MutinyNet)
@@ -648,10 +732,8 @@ mod tests {
             let psbt = owned_psbt(&fixtures);
             let reviewed = PendingPsbt::new(psbt).review(&wallet).expect("review");
             let signed = reviewed.clone().sign(&wallet, true).expect("sign");
-            let frames = signed
-                .qr_frames(QrTransport::Bbqr, QrDensity::default())
-                .expect("frames");
-            (reviewed, signed, frames)
+            let encoded = EncodedSigned::new(signed, SignedFormat::default()).expect("frames");
+            (reviewed, encoded)
         });
 
         let (view, mut cx) = app_window(&fixtures, cx);
@@ -660,10 +742,9 @@ mod tests {
                 app.page = Page::Sign;
                 app.sign.reviewed = Some(reviewed);
                 app.set_output(
-                    Some(WorkflowOutput::Signed {
-                        signed,
-                        playback: QrPlayback::animated(frames).expect("playback"),
-                    }),
+                    Some(WorkflowOutput::Signed(Box::new(
+                        SignedOutput::new(encoded).expect("playback"),
+                    ))),
                     window,
                     cx,
                 );

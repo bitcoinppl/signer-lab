@@ -1,7 +1,8 @@
+use bitcoin::consensus::encode::serialize_hex;
 use gpui_kit::{Image, SharedString, Task};
 use signer_lab_core::{
-    AddressType, ExportArtifact, ExportPayload, LabNetwork, QrFrames, SignedPsbt, SignerId,
-    SyncControl,
+    AddressType, ExportArtifact, ExportPayload, LabNetwork, QrDensity, QrFrames, QrTransport,
+    SignedPsbt, SignerId, SyncControl,
 };
 use std::{cell::RefCell, sync::Arc};
 
@@ -77,10 +78,7 @@ pub(super) enum WorkflowOutput {
     SeedQr {
         playback: QrPlayback,
     },
-    Signed {
-        signed: SignedPsbt,
-        playback: QrPlayback,
-    },
+    Signed(Box<SignedOutput>),
     Bulk {
         summary: SharedString,
     },
@@ -91,7 +89,7 @@ impl WorkflowOutput {
         match self {
             Self::Export { .. } => Page::Export,
             Self::SeedQr { .. } => Page::SeedQr,
-            Self::Signed { .. } => Page::Sign,
+            Self::Signed(_) => Page::Sign,
             Self::Bulk { .. } => Page::Bulk,
         }
     }
@@ -99,7 +97,8 @@ impl WorkflowOutput {
     pub(super) fn playback_mut(&mut self) -> Option<&mut QrPlayback> {
         match self {
             Self::Export { playback, .. } => playback.as_mut(),
-            Self::SeedQr { playback } | Self::Signed { playback, .. } => Some(playback),
+            Self::SeedQr { playback } => Some(playback),
+            Self::Signed(output) => Some(&mut output.playback),
             Self::Bulk { .. } => None,
         }
     }
@@ -111,9 +110,113 @@ impl WorkflowOutput {
                 ExportPayload::Ur { frames, .. } => frames.join("\n"),
             },
             Self::SeedQr { .. } => return None,
-            Self::Signed { signed, .. } => signed.psbt().to_string(),
+            Self::Signed(output) => output.text(),
             Self::Bulk { summary } => summary.to_string(),
         })
+    }
+}
+
+/// What the signed QR and text carry
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum SignedFormat {
+    /// The finalized transaction, which a watch-only wallet can broadcast as is
+    #[default]
+    Transaction,
+    /// The signed PSBT, for flows that still combine or finalize it
+    Psbt(QrTransport),
+}
+
+impl SignedFormat {
+    pub(super) const ALL: [Self; 3] = [
+        Self::Transaction,
+        Self::Psbt(QrTransport::Bbqr),
+        Self::Psbt(QrTransport::Ur),
+    ];
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Transaction => "Transaction",
+            Self::Psbt(QrTransport::Bbqr) => "PSBT · BBQR",
+            Self::Psbt(QrTransport::Ur) => "PSBT · UR",
+        }
+    }
+
+    /// Whether `signed` can be shown in this format
+    pub(super) const fn available(self, signed: &SignedPsbt) -> bool {
+        !matches!(self, Self::Transaction) || signed.transaction().is_some()
+    }
+}
+
+/// Signed QR frames built off the UI thread, before the main thread adds playback
+///
+/// Only [`EncodedSigned::new`] picks the format, so a transaction format always has a transaction
+pub(super) struct EncodedSigned {
+    signed: SignedPsbt,
+    format: SignedFormat,
+    frames: QrFrames,
+}
+
+impl EncodedSigned {
+    /// Encodes `preferred`, or a BBQR PSBT while some inputs still lack final scripts
+    pub(super) fn new(signed: SignedPsbt, preferred: SignedFormat) -> Result<Self, String> {
+        let density = QrDensity::default();
+        let (format, frames) = match (preferred, signed.transaction()) {
+            (SignedFormat::Transaction, Some(transaction)) => (
+                SignedFormat::Transaction,
+                QrFrames::from_transaction(transaction, density),
+            ),
+            (SignedFormat::Transaction, None) => (
+                SignedFormat::Psbt(QrTransport::Bbqr),
+                signed.qr_frames(QrTransport::Bbqr, density),
+            ),
+            (SignedFormat::Psbt(transport), _) => (
+                SignedFormat::Psbt(transport),
+                signed.qr_frames(transport, density),
+            ),
+        };
+
+        Ok(Self {
+            signed,
+            format,
+            frames: frames.map_err(|error| error.to_string())?,
+        })
+    }
+}
+
+/// A signed PSBT with the format and QR frames on screen
+pub(super) struct SignedOutput {
+    signed: SignedPsbt,
+    format: SignedFormat,
+    playback: QrPlayback,
+}
+
+impl SignedOutput {
+    /// Returns `None` when the encoder produced no frames
+    pub(super) fn new(encoded: EncodedSigned) -> Option<Self> {
+        Some(Self {
+            playback: QrPlayback::animated(encoded.frames)?,
+            signed: encoded.signed,
+            format: encoded.format,
+        })
+    }
+
+    pub(super) const fn signed(&self) -> &SignedPsbt {
+        &self.signed
+    }
+
+    pub(super) const fn format(&self) -> SignedFormat {
+        self.format
+    }
+
+    pub(super) const fn playback(&self) -> &QrPlayback {
+        &self.playback
+    }
+
+    fn text(&self) -> String {
+        match (self.format, self.signed.transaction()) {
+            (SignedFormat::Transaction, Some(transaction)) => serialize_hex(transaction),
+            _ => self.signed.psbt().to_string(),
+        }
     }
 }
 

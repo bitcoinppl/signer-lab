@@ -25,7 +25,7 @@ Version 1 supports MutinyNet and Testnet4 only.
 - Scan BBQR or `crypto-psbt` UR data with the camera, or paste PSBT and QR text
 - Open binary, Base64, BBQR, or UR PSBT files through the native file dialog or by dropping them on the PSBT field
 - Review inputs, outputs, signer matches, change, and fees before signing
-- Return a signed PSBT as BBQR or `crypto-psbt` UR QR frames
+- Return the signed transaction as hex and BBQR frames, or the signed PSBT as BBQR or `crypto-psbt` UR frames
 - Plan, save, sign, and broadcast fan-out, independent batch, and consolidation transactions
 - Derive bulk destinations from an address, XPUB, ranged descriptor, or another saved signer
 - Use exact fee rates from 0.1 sat/vB
@@ -39,11 +39,11 @@ Bulk plans are saved before BDK locks their inputs. On startup, Signer Lab resto
 
 ### Sign
 
-Review a PSBT's inputs, outputs, change, and fee, then sign it and show the result as BBQR or UR frames.
+Review a PSBT's inputs, outputs, change, and fee, then sign it. When every input is signed, the page shows the finished transaction as hex and a BBQR code, ready to broadcast. Switch to the signed PSBT, as BBQR or UR frames, when another signer still needs it. If some inputs still need another signature, only the signed PSBT is shown.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sign-signed-dark.png">
-  <img alt="Sign page with a reviewed PSBT, its outputs and fee, and the signed PSBT as a BBQR code" src="docs/screenshots/sign-signed-light.png">
+  <img alt="Sign page with a reviewed PSBT, its outputs and fee, and the signed transaction as a BBQR code" src="docs/screenshots/sign-signed-light.png">
 </picture>
 
 ### Export
@@ -148,6 +148,7 @@ just cli psbt sign \
   --input ./unsigned.psbt \
   --output ./signed.ur \
   --format ur
+# the result's "transaction" field holds the raw transaction hex once every input is signed
 
 # Key Teleport: encrypt recovery words for a receiver QR and code
 just cli key-teleport send \

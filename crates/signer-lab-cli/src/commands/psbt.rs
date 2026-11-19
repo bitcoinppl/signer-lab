@@ -1,3 +1,4 @@
+use bitcoin::consensus::encode::serialize_hex;
 use color_eyre::eyre::Result;
 use signer_lab_core::{PendingPsbt, read_psbt, write_psbt};
 
@@ -30,6 +31,7 @@ pub(super) async fn run(repository: &mut support::Repository, command: PsbtComma
                 format: format.name(),
                 report: signed.report(),
                 review: signed.review().clone(),
+                transaction: signed.transaction().map(serialize_hex),
             })
         }
     }

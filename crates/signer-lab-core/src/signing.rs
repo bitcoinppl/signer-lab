@@ -1,4 +1,4 @@
-use bdk_wallet::bitcoin::{Address, Amount, Psbt};
+use bdk_wallet::bitcoin::{Address, Amount, Psbt, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -161,11 +161,13 @@ impl ReviewedPsbt {
         trust_witness_utxo: bool,
     ) -> Result<SignedPsbt, WalletError> {
         let report = wallet.sign(&mut self.psbt, trust_witness_utxo)?;
+        let transaction = finalized_transaction(&self.psbt);
 
         Ok(SignedPsbt {
             psbt: self.psbt,
             review: self.review,
             report,
+            transaction,
         })
     }
 }
@@ -176,6 +178,7 @@ pub struct SignedPsbt {
     psbt: Psbt,
     review: PsbtReview,
     report: SignReport,
+    transaction: Option<Transaction>,
 }
 
 impl SignedPsbt {
@@ -197,6 +200,12 @@ impl SignedPsbt {
         self.report
     }
 
+    /// Returns the network-ready transaction, or `None` while any input still lacks a final script
+    #[must_use]
+    pub const fn transaction(&self) -> Option<&Transaction> {
+        self.transaction.as_ref()
+    }
+
     /// Encodes the signed PSBT for animated QR display
     ///
     /// # Errors
@@ -209,6 +218,17 @@ impl SignedPsbt {
     ) -> Result<QrFrames, QrTransportError> {
         QrFrames::from_psbt(&self.psbt, transport, density)
     }
+}
+
+/// Extracts the transaction only when every input is final, since a partial one cannot be broadcast
+fn finalized_transaction(psbt: &Psbt) -> Option<Transaction> {
+    let finalized = psbt
+        .inputs
+        .iter()
+        .all(|input| input.final_script_sig.is_some() || input.final_script_witness.is_some());
+
+    // review already showed the fee, and test transactions may pay high fees on purpose
+    finalized.then(|| psbt.clone().extract_tx_unchecked_fee_rate())
 }
 
 fn input_amount(psbt: &Psbt) -> Result<Option<Amount>, PsbtReviewError> {
@@ -282,13 +302,21 @@ pub enum PsbtReviewError {
 
 #[cfg(test)]
 mod tests {
-    use bdk_wallet::bitcoin::{
-        Amount, OutPoint, Psbt, ScriptBuf, Transaction, TxIn, TxOut, Witness, absolute::LockTime,
-        transaction::Version,
+    use std::path::Path;
+
+    use bdk_wallet::{
+        KeychainKind,
+        bitcoin::{
+            Amount, OutPoint, Psbt, ScriptBuf, Transaction, TxIn, TxOut, Witness,
+            absolute::LockTime, transaction::Version,
+        },
     };
 
     use super::PendingPsbt;
-    use crate::{AccountIndex, LabNetwork, MnemonicSecret, NetworkWallet, SignerId};
+    use crate::{AccountIndex, AddressType, LabNetwork, MnemonicSecret, NetworkWallet, SignerId};
+
+    const ALICE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const BOB: &str = "legal winner thank year wave sausage worth useful legal winner thank yellow";
 
     #[test]
     fn review_calculates_fee_from_witness_utxo() {
@@ -334,6 +362,100 @@ mod tests {
 
         assert_eq!(reviewed.review().fee, Some(Amount::from_sat(1_000)));
         assert_eq!(reviewed.review().matching_input_count, 0);
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    fn open_wallet(temp: &Path, words: &str) -> NetworkWallet {
+        let secret = MnemonicSecret::parse(words).expect("test mnemonic is valid");
+
+        NetworkWallet::open(
+            temp,
+            SignerId::new(),
+            LabNetwork::MutinyNet,
+            AccountIndex::default(),
+            &secret,
+        )
+        .expect("test wallet opens")
+    }
+
+    /// Funds the wallet's first receive address and spends it to its next one
+    fn owned_psbt(wallet: &mut NetworkWallet) -> Psbt {
+        let account = wallet.account_mut(AddressType::NativeSegwit);
+        let receive = account
+            .bdk()
+            .peek_address(KeychainKind::External, 0)
+            .address
+            .script_pubkey();
+        let destination = account
+            .bdk()
+            .peek_address(KeychainKind::External, 1)
+            .address
+            .script_pubkey();
+
+        let funding = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: Vec::new(),
+            output: vec![TxOut {
+                value: Amount::from_sat(50_000),
+                script_pubkey: receive,
+            }],
+        };
+
+        account.bdk_mut().apply_unconfirmed_txs([(funding, 1)]);
+        let mut builder = account.bdk_mut().build_tx();
+        builder.add_recipient(destination, Amount::from_sat(20_000));
+        builder.fee_absolute(Amount::from_sat(500));
+        builder.finish().expect("owned PSBT builds")
+    }
+
+    #[test]
+    fn signing_every_input_yields_the_broadcast_transaction() {
+        let temp = std::env::temp_dir().join(format!("signer-lab-final-{}", uuid::Uuid::new_v4()));
+        let mut wallet = open_wallet(&temp, ALICE);
+        let psbt = owned_psbt(&mut wallet);
+        let unsigned_txid = psbt.unsigned_tx.compute_txid();
+
+        let signed = PendingPsbt::new(psbt)
+            .review(&wallet)
+            .expect("review")
+            .sign(&wallet, true)
+            .expect("sign");
+
+        let transaction = signed.transaction().expect("every input is final");
+        assert_eq!(transaction.compute_txid(), unsigned_txid);
+        assert!(
+            transaction
+                .input
+                .iter()
+                .all(|input| !input.witness.is_empty())
+        );
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn signing_some_inputs_has_no_transaction() {
+        let temp =
+            std::env::temp_dir().join(format!("signer-lab-partial-{}", uuid::Uuid::new_v4()));
+        let mut wallet = open_wallet(&temp, ALICE);
+        let mut other = open_wallet(&temp.join("other"), BOB);
+        let mut psbt = owned_psbt(&mut wallet);
+        let foreign = owned_psbt(&mut other);
+        psbt.unsigned_tx
+            .input
+            .push(foreign.unsigned_tx.input[0].clone());
+        psbt.inputs.push(foreign.inputs[0].clone());
+
+        let signed = PendingPsbt::new(psbt)
+            .review(&wallet)
+            .expect("review")
+            .sign(&wallet, true)
+            .expect("sign");
+
+        assert_eq!(signed.report().signed_inputs, 1);
+        assert_eq!(signed.transaction(), None);
 
         let _ = std::fs::remove_dir_all(temp);
     }

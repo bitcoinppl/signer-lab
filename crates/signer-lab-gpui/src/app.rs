@@ -101,7 +101,7 @@ impl SignerLabApp {
             cx.subscribe_in(&sign.psbt_input, window, |app, _, event, window, cx| {
                 if matches!(event, gpui_kit::component::input::InputEvent::Change) {
                     app.sign.reviewed = None;
-                    if matches!(app.output, Some(WorkflowOutput::Signed { .. })) {
+                    if matches!(app.output, Some(WorkflowOutput::Signed(_))) {
                         app.set_output(None, window, cx);
                     }
 

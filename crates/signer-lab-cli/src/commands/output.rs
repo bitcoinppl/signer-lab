@@ -49,6 +49,8 @@ pub(super) struct PsbtSignOutput {
     pub(super) format: &'static str,
     pub(super) report: SignReport,
     pub(super) review: PsbtReview,
+    /// Raw transaction hex, or `null` while any input still needs a signature
+    pub(super) transaction: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -8,7 +8,7 @@ use bbqr::{
     qr::Version,
     split::{Split, SplitOptions},
 };
-use bitcoin::Psbt;
+use bitcoin::{Psbt, Transaction, consensus};
 use cove_ur::CryptoPsbt;
 use cove_util::ResultExt as _;
 use foundation_ur::{Decoder as UrDecoder, Encoder as UrEncoder, UR};
@@ -121,6 +121,27 @@ impl QrFrames {
             transport,
             frames,
             interval_ms: density.animation_interval_ms(transport),
+        })
+    }
+
+    /// Encodes a finalized transaction as BBQR
+    ///
+    /// UR has no transaction type that Cove reads, so transactions use BBQR only
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transaction cannot fit in BBQR frames
+    pub fn from_transaction(
+        transaction: &Transaction,
+        density: QrDensity,
+    ) -> Result<Self, QrTransportError> {
+        let data = consensus::serialize(transaction);
+        let frames = encode_bbqr_data(&data, FileType::Transaction, density, 1)?;
+
+        Ok(Self {
+            transport: QrTransport::Bbqr,
+            frames,
+            interval_ms: density.animation_interval_ms(QrTransport::Bbqr),
         })
     }
 
@@ -414,7 +435,11 @@ pub enum QrTransportError {
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::{Psbt, Transaction, absolute::LockTime, transaction::Version};
+    use bbqr::{file_type::FileType, join::Joined};
+    use bitcoin::{
+        Amount, Psbt, ScriptBuf, Transaction, TxOut, absolute::LockTime, consensus,
+        transaction::Version,
+    };
 
     use super::{QrDensity, QrFrames, QrScanProgress, QrScanner, QrTransport};
 
@@ -450,5 +475,29 @@ mod tests {
 
             assert_eq!(complete, Some(expected));
         }
+    }
+
+    #[test]
+    fn transaction_frames_are_bbqr_transactions() {
+        let expected = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::from_consensus(840_000),
+            input: Vec::new(),
+            output: vec![TxOut {
+                value: Amount::from_sat(12_345),
+                script_pubkey: ScriptBuf::from_bytes(vec![0x51]),
+            }],
+        };
+
+        let frames = QrFrames::from_transaction(&expected, QrDensity::default())
+            .expect("transaction encodes");
+        assert_eq!(frames.transport, QrTransport::Bbqr);
+
+        let joined = Joined::try_from_parts(frames.frames).expect("frames join");
+        assert_eq!(joined.file_type, FileType::Transaction);
+
+        let decoded: Transaction =
+            consensus::deserialize(&joined.data).expect("transaction decodes");
+        assert_eq!(decoded, expected);
     }
 }
