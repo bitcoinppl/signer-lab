@@ -59,7 +59,10 @@ pub use mnemonic::{MnemonicError, MnemonicImportError, MnemonicSecret};
 pub use operation::{
     OperationId, OperationKind, OperationLifecycle, OperationState, StateTransitionError,
 };
-pub use qr::{QrDensity, QrFrames, QrScanProgress, QrScanner, QrTransport, QrTransportError};
+pub use qr::{
+    QrDensity, QrErrorCorrection, QrFramePosition, QrFrames, QrScanProgress, QrScanner,
+    QrTransport, QrTransportError,
+};
 pub use repository::{
     BulkDestinationSpec, BulkExecutionError, BulkExecutionReport, BulkPlanOperationError,
     BulkShape, CreatedSigner, CurrentBulkOperation, InputReservation, OutputCount, PlanBulk,

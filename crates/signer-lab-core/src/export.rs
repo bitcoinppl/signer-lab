@@ -519,7 +519,7 @@ mod tests {
     use super::{ExportKind, ExportPayload, WalletExporter};
     use crate::{
         AccountIndex, AddressType, LabNetwork, MnemonicSecret, NetworkWallet, QrDensity,
-        QrTransport, SignerId,
+        QrFramePosition, QrTransport, SignerId,
     };
 
     const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -606,6 +606,53 @@ mod tests {
     }
 
     #[test]
+    fn jade_account_qr_completes_when_one_fragment_is_never_read() {
+        let (temp, wallet) = test_wallet();
+        let accounts = wallet
+            .public_accounts()
+            .expect("test wallet exposes public accounts");
+
+        let exporter = WalletExporter::new(LabNetwork::MutinyNet, &accounts)
+            .expect("test wallet accounts share one fingerprint");
+        let artifact = exporter
+            .export(ExportKind::JadeCryptoAccount)
+            .expect("test Jade export succeeds");
+        let ExportPayload::Ur { cbor, .. } = &artifact.payload else {
+            panic!("expected UR payload");
+        };
+
+        let qr = artifact
+            .qr_frames(QrTransport::Ur, QrDensity::default())
+            .expect("Jade export encodes as UR");
+        let Some(QrFramePosition::Fragment { count, .. }) = qr.position(0) else {
+            panic!("a UR cycle starts with its fragment pass");
+        };
+        assert!(count > 1, "Jade account export fits one frame");
+
+        // a scanner that lowercases, as Cove's and Signer Lab's do, never sees the second frame
+        let mut decoder = Decoder::default();
+        for (_, frame) in qr
+            .frames()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != 1)
+        {
+            let frame = frame.to_ascii_lowercase();
+            decoder
+                .receive(UR::parse(&frame).expect("QR frame parses"))
+                .expect("QR frame decodes");
+            if decoder.is_complete() {
+                break;
+            }
+        }
+
+        let message = decoder.message().expect("decoder has a valid message");
+        assert_eq!(message, Some(cbor.as_slice()));
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
     fn every_export_supports_selectable_animated_qr_transports() {
         let (temp, wallet) = test_wallet();
         let accounts = wallet
@@ -626,13 +673,13 @@ mod tests {
                     .qr_frames(transport, QrDensity::default())
                     .expect("export supports the selected QR transport");
 
-                assert_eq!(qr.transport, transport);
+                assert_eq!(qr.transport(), transport);
                 assert!(
-                    !qr.frames.is_empty(),
+                    !qr.frames().is_empty(),
                     "{kind:?} over {transport:?} produced no QR frames"
                 );
                 if transport == QrTransport::Bbqr {
-                    assert!(qr.frames.len() >= 2);
+                    assert!(qr.frames().len() >= 2);
                 }
             }
         }

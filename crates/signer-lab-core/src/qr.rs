@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use bbqr::{
     continuous_join::{ContinuousJoinResult, ContinuousJoiner},
@@ -11,7 +11,7 @@ use bbqr::{
 use bitcoin::{Psbt, Transaction, consensus};
 use cove_ur::CryptoPsbt;
 use cove_util::ResultExt as _;
-use foundation_ur::{Decoder as UrDecoder, Encoder as UrEncoder, UR};
+use foundation_ur::{Decoder as UrDecoder, Encoder as UrEncoder, UR, fountain::chooser};
 use serde::{Deserialize, Serialize};
 
 /// A supported animated QR transport
@@ -90,15 +90,45 @@ impl Default for QrDensity {
     }
 }
 
-/// Frames ready for animated display
+/// How much of a QR symbol is spent on error correction
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QrErrorCorrection {
+    /// Level L, which recovers about 7% of the symbol
+    Low,
+    /// Level M, which recovers about 15% of the symbol
+    Medium,
+}
+
+/// Where one frame sits in an animated QR cycle
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QrFramePosition {
+    /// A frame from the pass that carries every fragment once
+    Fragment {
+        /// One-based frame number within the fragment pass
+        number: usize,
+        /// Frames in the fragment pass
+        count: usize,
+    },
+    /// A UR fountain part that mixes several fragments after the fragment pass
+    Fountain {
+        /// One-based number within the fountain parts
+        number: usize,
+        /// Fountain parts in the cycle
+        count: usize,
+    },
+}
+
+/// The QR symbol contents of one animated display cycle
+///
+/// The cycle starts with frames that each carry one fragment. UR cycles with more than one
+/// fragment then add fountain parts. Each fountain part XORs a pseudo-random set of fragments, so
+/// a receiver that never reads one fragment's frame can still recover it from a later mix
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QrFrames {
-    /// Transport used to encode the frames
-    pub transport: QrTransport,
-    /// Encoded frame strings
-    pub frames: Vec<String>,
-    /// Recommended frame interval
-    pub interval_ms: u64,
+    transport: QrTransport,
+    frames: Vec<String>,
+    fragment_count: usize,
+    interval_ms: u64,
 }
 
 impl QrFrames {
@@ -112,16 +142,17 @@ impl QrFrames {
         transport: QrTransport,
         density: QrDensity,
     ) -> Result<Self, QrTransportError> {
-        let frames = match transport {
-            QrTransport::Bbqr => encode_bbqr_data(&psbt.serialize(), FileType::Psbt, density, 1)?,
-            QrTransport::Ur => encode_ur(psbt, density)?,
-        };
-
-        Ok(Self {
-            transport,
-            frames,
-            interval_ms: density.animation_interval_ms(transport),
-        })
+        match transport {
+            QrTransport::Bbqr => {
+                let frames = encode_bbqr_data(&psbt.serialize(), FileType::Psbt, density, 1)?;
+                Ok(Self::bbqr(frames, density))
+            }
+            QrTransport::Ur => Ok(Self::from_ur_data(
+                CRYPTO_PSBT,
+                &crypto_psbt_cbor(psbt)?,
+                density,
+            )),
+        }
     }
 
     /// Encodes a finalized transaction as BBQR
@@ -138,11 +169,7 @@ impl QrFrames {
         let data = consensus::serialize(transaction);
         let frames = encode_bbqr_data(&data, FileType::Transaction, density, 1)?;
 
-        Ok(Self {
-            transport: QrTransport::Bbqr,
-            frames,
-            interval_ms: density.animation_interval_ms(QrTransport::Bbqr),
-        })
+        Ok(Self::bbqr(frames, density))
     }
 
     pub(crate) fn from_bbqr_data(
@@ -152,22 +179,153 @@ impl QrFrames {
     ) -> Result<Self, QrTransportError> {
         let frames = encode_bbqr_data(data, file_type, density, 2)?;
 
-        Ok(Self {
-            transport: QrTransport::Bbqr,
-            frames,
-            interval_ms: density.animation_interval_ms(QrTransport::Bbqr),
-        })
+        Ok(Self::bbqr(frames, density))
     }
 
     pub(crate) fn from_ur_data(ur_type: &str, cbor: &[u8], density: QrDensity) -> Self {
-        let frames = encode_ur_data(ur_type, cbor, density.ur_fragment_len);
+        let mut encoder = UrEncoder::new();
+        encoder.start(ur_type, cbor, density.ur_fragment_len);
+        let fragment_count = encoder.sequence_count() as usize;
+
+        let mut frames: Vec<String> = (0..fragment_count)
+            .map(|_| ur_qr_text(&encoder.next_part()))
+            .collect();
+        frames.extend(fountain_parts(&mut encoder, fragment_count));
 
         Self {
             transport: QrTransport::Ur,
             frames,
+            fragment_count,
             interval_ms: density.animation_interval_ms(QrTransport::Ur),
         }
     }
+
+    fn bbqr(frames: Vec<String>, density: QrDensity) -> Self {
+        Self {
+            transport: QrTransport::Bbqr,
+            fragment_count: frames.len(),
+            frames,
+            interval_ms: density.animation_interval_ms(QrTransport::Bbqr),
+        }
+    }
+
+    /// Returns the transport used to encode the frames
+    #[must_use]
+    pub const fn transport(&self) -> QrTransport {
+        self.transport
+    }
+
+    /// Returns the recommended frame interval
+    #[must_use]
+    pub const fn interval_ms(&self) -> u64 {
+        self.interval_ms
+    }
+
+    /// Returns every frame in display order, one QR symbol each
+    #[must_use]
+    pub fn frames(&self) -> &[String] {
+        &self.frames
+    }
+
+    /// Returns the error correction each frame's QR symbol should use
+    ///
+    /// BBQR splits are sized against level L capacity, so BBQR stays at L. Alphanumeric mode packs
+    /// about 31% more text per bit than byte mode, and level M costs about 20% of capacity, so
+    /// uppercase UR at M is never a larger QR version than lowercase byte-mode UR at L, and UR gets
+    /// the stronger level. With full 200-byte fragments it is one version smaller
+    #[must_use]
+    pub const fn error_correction(&self) -> QrErrorCorrection {
+        match self.transport {
+            QrTransport::Bbqr => QrErrorCorrection::Low,
+            QrTransport::Ur => QrErrorCorrection::Medium,
+        }
+    }
+
+    /// Describes where a frame index sits in the cycle
+    ///
+    /// Returns `None` when the index is outside the cycle
+    #[must_use]
+    pub fn position(&self, index: usize) -> Option<QrFramePosition> {
+        if index >= self.frames.len() {
+            return None;
+        }
+
+        if index < self.fragment_count {
+            return Some(QrFramePosition::Fragment {
+                number: index + 1,
+                count: self.fragment_count,
+            });
+        }
+
+        Some(QrFramePosition::Fountain {
+            number: index - self.fragment_count + 1,
+            count: self.frames.len() - self.fragment_count,
+        })
+    }
+}
+
+/// Lowercase PSBT text frames for files and copied text, one frame per fragment
+///
+/// # Errors
+///
+/// Returns an error when the PSBT cannot fit or the UR payload cannot be encoded
+pub(crate) fn psbt_text_frames(
+    psbt: &Psbt,
+    transport: QrTransport,
+    density: QrDensity,
+) -> Result<Vec<String>, QrTransportError> {
+    match transport {
+        QrTransport::Bbqr => encode_bbqr_data(&psbt.serialize(), FileType::Psbt, density, 1),
+        QrTransport::Ur => Ok(encode_ur_data(
+            CRYPTO_PSBT,
+            &crypto_psbt_cbor(psbt)?,
+            density.ur_fragment_len,
+        )),
+    }
+}
+
+/// Fountain parts that follow the fragment pass in one animated UR cycle
+///
+/// Each part mixes a given fragment with probability `1 / H(n)`, about 19% for 118 fragments, so
+/// two passes' worth of mixes recover a missed fragment many times over. The floor keeps short
+/// messages from repeating the same few mixes. Parts keep coming until every fragment is in at
+/// least one mix, because a looped cycle that never mixes a fragment stalls a receiver that cannot
+/// read that fragment's frame. A live encoder would never repeat, but `foundation-ur` borrows its
+/// message and cannot seek, so a bounded cycle keeps playback a plain index over owned strings
+fn fountain_parts(encoder: &mut UrEncoder<'_, '_>, fragment_count: usize) -> Vec<String> {
+    const FOUNTAIN_PASSES: usize = 2;
+    const MIN_FOUNTAIN_PARTS: usize = 16;
+
+    if fragment_count < 2 {
+        return Vec::new();
+    }
+
+    let minimum = fragment_count
+        .saturating_mul(FOUNTAIN_PASSES)
+        .max(MIN_FOUNTAIN_PARTS);
+    let mut unmixed: BTreeSet<usize> = (0..fragment_count).collect();
+    let mut parts = Vec::with_capacity(minimum);
+
+    while parts.len() < minimum || !unmixed.is_empty() {
+        let part = encoder.next_part();
+        let UR::MultiPartDeserialized { fragment, .. } = &part else {
+            unreachable!("the UR encoder emits only multipart parts");
+        };
+
+        // the chooser is seeded by sequence and checksum, so this matches the encoder's mix
+        for index in fragment.indexes::<chooser::Alloc, BTreeSet<usize>>() {
+            unmixed.remove(&index);
+        }
+
+        parts.push(ur_qr_text(&part));
+    }
+
+    parts
+}
+
+/// UR text is case-insensitive and uppercase lets the QR use alphanumeric mode
+fn ur_qr_text(part: &UR<'_>) -> String {
+    part.to_string().to_ascii_uppercase()
 }
 
 /// Progress or completion from one scanned QR frame
@@ -290,7 +448,7 @@ impl QrScanner {
         }
 
         let ur = UR::parse(frame).map_err_str(QrTransportError::Ur)?;
-        if ur.as_type() != "crypto-psbt" {
+        if ur.as_type() != CRYPTO_PSBT {
             return Err(QrTransportError::WrongPayload);
         }
 
@@ -378,17 +536,15 @@ fn encode_bbqr_data(
     Ok(split.parts)
 }
 
-fn encode_ur(psbt: &Psbt, density: QrDensity) -> Result<Vec<String>, QrTransportError> {
-    let cbor = CryptoPsbt::new(psbt.clone())
+const CRYPTO_PSBT: &str = "crypto-psbt";
+
+fn crypto_psbt_cbor(psbt: &Psbt) -> Result<Vec<u8>, QrTransportError> {
+    CryptoPsbt::new(psbt.clone())
         .to_cbor()
-        .map_err_str(QrTransportError::Ur)?;
-    Ok(encode_ur_data(
-        "crypto-psbt",
-        &cbor,
-        density.ur_fragment_len,
-    ))
+        .map_err_str(QrTransportError::Ur)
 }
 
+/// Lowercase canonical UR parts that carry each fragment exactly once
 pub(crate) fn encode_ur_data(ur_type: &str, cbor: &[u8], fragment_len: usize) -> Vec<String> {
     let mut encoder = UrEncoder::new();
     encoder.start(ur_type, cbor, fragment_len);
@@ -463,9 +619,9 @@ mod tests {
             let mut scanner = QrScanner::new();
             let mut complete = None;
 
-            for frame in frames.frames.into_iter().rev() {
+            for frame in frames.frames().iter().rev() {
                 if let QrScanProgress::Complete { psbt, .. } = scanner
-                    .receive(&frame)
+                    .receive(frame)
                     .expect("encoded frame decodes successfully")
                 {
                     complete = Some(psbt);
@@ -491,9 +647,9 @@ mod tests {
 
         let frames = QrFrames::from_transaction(&expected, QrDensity::default())
             .expect("transaction encodes");
-        assert_eq!(frames.transport, QrTransport::Bbqr);
+        assert_eq!(frames.transport(), QrTransport::Bbqr);
 
-        let joined = Joined::try_from_parts(frames.frames).expect("frames join");
+        let joined = Joined::try_from_parts(frames.frames().to_vec()).expect("frames join");
         assert_eq!(joined.file_type, FileType::Transaction);
 
         let decoded: Transaction =

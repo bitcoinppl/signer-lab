@@ -3,7 +3,8 @@ use std::{fs, path::Path, str::FromStr as _};
 use bitcoin::Psbt;
 
 use crate::{
-    ExportArtifact, ExportPayload, QrDensity, QrFrames, QrScanProgress, QrScanner, QrTransport,
+    ExportArtifact, ExportPayload, QrDensity, QrScanProgress, QrScanner, QrTransport,
+    qr::psbt_text_frames,
 };
 
 const PSBT_MAGIC: &[u8] = b"psbt\xff";
@@ -141,9 +142,9 @@ impl ExportArtifact {
 }
 
 fn qr_document(psbt: &Psbt, transport: QrTransport) -> Result<String, PsbtFileError> {
-    let frames = QrFrames::from_psbt(psbt, transport, QrDensity::default())?;
+    let frames = psbt_text_frames(psbt, transport, QrDensity::default())?;
 
-    Ok(frames.frames.join("\n"))
+    Ok(frames.join("\n"))
 }
 
 /// Wallet-export file errors

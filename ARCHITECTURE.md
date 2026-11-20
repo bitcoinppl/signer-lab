@@ -10,6 +10,12 @@ All BDK, Esplora, secret storage, export, signing, file-format, and operation be
 
 PSBT file detection is content-based. The core accepts binary PSBT, Base64 PSBT, BBQR frames, and `crypto-psbt` UR frames. Wallet export files keep their original text format, with one UR frame per line for multipart data.
 
+## QR transport
+
+`QrFrames` owns one animated display cycle and the error-correction level its symbols need. A BBQR cycle is its split parts. A UR cycle starts with one frame for each fragment. When the payload has more than one fragment, the cycle then adds fountain parts: twice the fragment count, with at least 16, and more until every fragment appears in at least one mix. Each fountain part XORs a pseudo-random set of fragments, so a receiver that never reads one fragment's frame recovers it from a later mix. The app shows `n / total` during the fragment pass and `Mixed n / total` during the fountain parts. `foundation-ur` cannot seek, and its encoder borrows the message, so the cycle is computed once instead of streamed.
+
+UR is case-insensitive. QR frames are uppercase so the symbol uses QR alphanumeric mode, and they render at error-correction level M. That symbol is never a larger QR version than lowercase byte mode at level L, and with full 200-byte fragments it is one version smaller. The default 200-byte length is a maximum, so smaller payloads get shorter fragments and may stay the same version. BBQR parts are sized against level L capacity, so BBQR and SeedQR stay at L. Files and copied text use lowercase canonical UR with each fragment once.
+
 ## Persistence
 
 The mnemonic is stored only in an owner-only plain-text file, `secrets/<signer-id>.txt`, in the data directory. Signer Lab rejects mainnet, so file storage lets CLI and UI automation run without Keychain prompts. Toasty with Turso stores signer metadata, network settings, destination reservations, and operation state. BDK stores wallet changesets and persistent outpoint locks in BDK-owned SQLite files.

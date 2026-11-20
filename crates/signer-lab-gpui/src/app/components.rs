@@ -18,6 +18,7 @@ use gpui_kit::{
     Stateful, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
     prelude::FluentBuilder as _, px,
 };
+use signer_lab_core::QrFramePosition;
 use std::sync::Arc;
 
 /// Groups decimal digits so wallet amounts remain easy to read
@@ -260,8 +261,10 @@ pub(super) fn qr_output(
                 .tooltip("Larger")
                 .on_click(cx.listener(|app, _, _, cx| app.grow_qr_preview(cx))),
         );
-    if playback.frame_count() > 1 {
-        let playing = playback.animation() == Some(QrAnimation::Playing);
+    if let Some(animation) = playback.animation()
+        && let Some(position) = playback.position()
+    {
+        let playing = animation == QrAnimation::Playing;
         controls = controls
             .child(
                 Button::new("qr-play")
@@ -288,14 +291,19 @@ pub(super) fn qr_output(
                     .text_size(px(12.0))
                     .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!(
-                        "{} / {}",
-                        playback.frame_index() + 1,
-                        playback.frame_count()
-                    )),
+                    .child(frame_counter(position)),
             );
     }
     v_flex().gap_2().items_center().child(stage).child(controls)
+}
+
+/// Fountain parts get their own count so the fragment count still says how many frames carry
+/// the payload
+fn frame_counter(position: QrFramePosition) -> String {
+    match position {
+        QrFramePosition::Fragment { number, count } => format!("{number} / {count}"),
+        QrFramePosition::Fountain { number, count } => format!("Mixed {number} / {count}"),
+    }
 }
 
 /// Generated text remains selectable but cannot diverge from its saved payload

@@ -658,8 +658,7 @@ impl SignerLabApp {
             .accounts
             .iter()
             .find(|account| account.address_type == kind)
-            .map(|account| account.account_path.to_string())
-            .unwrap_or_default();
+            .map_or_else(String::new, |account| account.account_path.to_string());
         let selected = self.wallet.selected_account == kind;
         h_flex()
             .id(("account", kind as usize))

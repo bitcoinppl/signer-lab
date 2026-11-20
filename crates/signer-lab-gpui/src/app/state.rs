@@ -1,8 +1,8 @@
 use bitcoin::consensus::encode::serialize_hex;
 use gpui_kit::{Image, SharedString, Task};
 use signer_lab_core::{
-    AddressType, ExportArtifact, ExportPayload, LabNetwork, QrDensity, QrFrames, QrTransport,
-    SignedPsbt, SignerId, SyncControl,
+    AddressType, ExportArtifact, ExportPayload, LabNetwork, QrDensity, QrErrorCorrection,
+    QrFramePosition, QrFrames, QrTransport, SignedPsbt, SignerId, SyncControl,
 };
 use std::{cell::RefCell, sync::Arc};
 
@@ -310,9 +310,8 @@ impl QrAnimation {
 enum QrSequence {
     Static(String),
     Animated {
-        frames: Vec<String>,
+        frames: QrFrames,
         index: usize,
-        interval_ms: u64,
         animation: QrAnimation,
     },
 }
@@ -322,14 +321,14 @@ impl QrSequence {
         Self::Static(frame)
     }
 
-    pub(super) fn animated(qr: QrFrames) -> Option<Self> {
-        if qr.frames.is_empty() {
+    pub(super) fn animated(frames: QrFrames) -> Option<Self> {
+        if frames.frames().is_empty() {
             return None;
         }
+
         Some(Self::Animated {
-            frames: qr.frames,
+            frames,
             index: 0,
-            interval_ms: qr.interval_ms,
             animation: QrAnimation::Playing,
         })
     }
@@ -337,7 +336,7 @@ impl QrSequence {
     pub(super) fn current_frame(&self) -> &str {
         match self {
             Self::Static(frame) => frame,
-            Self::Animated { frames, index, .. } => &frames[*index],
+            Self::Animated { frames, index, .. } => &frames.frames()[*index],
         }
     }
 
@@ -348,10 +347,25 @@ impl QrSequence {
         }
     }
 
-    pub(super) fn frame_count(&self) -> usize {
+    /// Static frames are `SeedQR` digits and BBQR text, both sized for level L
+    pub(super) const fn error_correction(&self) -> QrErrorCorrection {
         match self {
-            Self::Static(_) => 1,
-            Self::Animated { frames, .. } => frames.len(),
+            Self::Static(_) => QrErrorCorrection::Low,
+            Self::Animated { frames, .. } => frames.error_correction(),
+        }
+    }
+
+    pub(super) fn position(&self) -> Option<QrFramePosition> {
+        match self {
+            Self::Static(_) => None,
+            Self::Animated { frames, index, .. } => frames.position(*index),
+        }
+    }
+
+    fn is_multi_frame(&self) -> bool {
+        match self {
+            Self::Static(_) => false,
+            Self::Animated { frames, .. } => frames.frames().len() > 1,
         }
     }
 
@@ -359,34 +373,28 @@ impl QrSequence {
         match self {
             Self::Animated {
                 frames,
-                interval_ms,
                 animation: QrAnimation::Playing,
                 ..
-            } if frames.len() > 1 => Some(*interval_ms),
+            } if self.is_multi_frame() => Some(frames.interval_ms()),
             Self::Static(_) | Self::Animated { .. } => None,
         }
     }
 
-    pub(super) const fn animation(&self) -> Option<QrAnimation> {
+    pub(super) fn animation(&self) -> Option<QrAnimation> {
         match self {
-            Self::Animated {
-                frames, animation, ..
-            } if frames.len() > 1 => Some(*animation),
+            Self::Animated { animation, .. } if self.is_multi_frame() => Some(*animation),
             Self::Static(_) | Self::Animated { .. } => None,
         }
     }
 
     pub(super) fn toggle_animation(&mut self) -> Option<QrAnimation> {
-        let Self::Animated {
-            frames, animation, ..
-        } = self
-        else {
-            return None;
-        };
-
-        if frames.len() < 2 {
+        if !self.is_multi_frame() {
             return None;
         }
+
+        let Self::Animated { animation, .. } = self else {
+            return None;
+        };
 
         *animation = animation.toggled();
         Some(*animation)
@@ -397,7 +405,7 @@ impl QrSequence {
             return;
         };
 
-        *index = (*index + 1) % frames.len();
+        *index = (*index + 1) % frames.frames().len();
     }
 }
 
@@ -439,15 +447,16 @@ impl QrPlayback {
         self.sequence.frame_index()
     }
 
-    pub(super) fn frame_count(&self) -> usize {
-        self.sequence.frame_count()
+    /// Returns `None` for a static frame
+    pub(super) fn position(&self) -> Option<QrFramePosition> {
+        self.sequence.position()
     }
 
     pub(super) fn animation_interval_ms(&self) -> Option<u64> {
         self.sequence.animation_interval_ms()
     }
 
-    pub(super) const fn animation(&self) -> Option<QrAnimation> {
+    pub(super) fn animation(&self) -> Option<QrAnimation> {
         self.sequence.animation()
     }
 
@@ -468,7 +477,11 @@ impl QrPlayback {
             return Ok(Arc::clone(&cached.image));
         }
 
-        let image = crate::qr_image::render(self.current_frame(), u32::from(side))?;
+        let image = crate::qr_image::render(
+            self.current_frame(),
+            self.sequence.error_correction(),
+            u32::from(side),
+        )?;
         *cache = Some(QrImageCache {
             index: self.frame_index(),
             side,
@@ -481,17 +494,13 @@ impl QrPlayback {
 #[cfg(test)]
 mod tests {
     use super::{QrAnimation, QrPlayback};
-    use signer_lab_core::{QrFrames, QrTransport};
+    use crate::qr_image::tests::multipart_ur_frames;
+    use signer_lab_core::QrFramePosition;
     use std::sync::Arc;
 
     #[test]
     fn playback_pauses_and_invalidates_only_changed_images() {
-        let mut playback = QrPlayback::animated(QrFrames {
-            transport: QrTransport::Bbqr,
-            frames: vec!["first".into(), "second".into()],
-            interval_ms: 250,
-        })
-        .expect("frames");
+        let mut playback = QrPlayback::animated(multipart_ur_frames()).expect("frames");
 
         let image = playback.image(260).expect("QR");
         assert!(Arc::ptr_eq(
@@ -508,5 +517,42 @@ mod tests {
             &playback.image(260).expect("QR"),
             &playback.image(180).expect("small QR")
         ));
+    }
+
+    #[test]
+    fn playback_counts_fragments_then_fountain_parts_and_loops() {
+        let frames = multipart_ur_frames();
+        let cycle = frames.frames().len();
+        let mut playback = QrPlayback::animated(frames).expect("frames");
+        let Some(QrFramePosition::Fragment {
+            count: fragments, ..
+        }) = playback.position()
+        else {
+            panic!("a UR cycle starts with its fragment pass");
+        };
+
+        for _ in 0..fragments {
+            playback.advance();
+        }
+
+        assert_eq!(
+            playback.position(),
+            Some(QrFramePosition::Fountain {
+                number: 1,
+                count: cycle - fragments,
+            })
+        );
+
+        for _ in fragments..cycle {
+            playback.advance();
+        }
+
+        assert_eq!(
+            playback.position(),
+            Some(QrFramePosition::Fragment {
+                number: 1,
+                count: fragments,
+            })
+        );
     }
 }
